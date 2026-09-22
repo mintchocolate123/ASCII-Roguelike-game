@@ -64,6 +64,24 @@ def test_draw_card_description_fits_within_six_lines_for_long_text():
     assert "╚" in lines[9]
 
 
+def test_draw_card_truncated_description_shows_ellipsis_on_last_line():
+    """截斷保護保留：被截斷時最後一行要顯示「…」。"""
+    grid = Grid(width=20, height=12)
+    long_desc = "造成 3 點傷害，重複 3 次。獲得 5 點護盾。回復 4 點生命。抽 2 張牌。獲得 2 點能量。失去 3 點生命。"
+    draw_card(grid, 0, 0, name="連斬", cost=1, card_type="attack", description=long_desc)
+    lines = plain_lines(grid)
+    last_desc_row = lines[8]  # 第 3 到 8 列是描述，第 8 列是最後一行
+    assert "…" in last_desc_row
+    assert "╚" in lines[9]  # 下框線沒有被蓋掉
+
+
+def test_draw_card_short_description_has_no_ellipsis():
+    grid = Grid(width=20, height=12)
+    draw_card(grid, 0, 0, name="斬擊", cost=1, card_type="attack", description="造成 6 點傷害。")
+    lines = plain_lines(grid)
+    assert "…" not in "".join(lines)
+
+
 def test_draw_keyword_text_strips_brackets_and_colors_inside():
     grid = Grid(width=20, height=1)
     draw_keyword_text(grid, 0, 0, "造成【中毒】3", base_fg="text", keyword_fg="keyword")

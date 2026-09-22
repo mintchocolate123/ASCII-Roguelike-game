@@ -320,6 +320,18 @@ def draw_keyword_text(
     return cx
 
 
+def _truncate_with_ellipsis(line: str, width: int) -> str:
+    """截斷保護：這行文字被截斷了，騰出至少一格畫上刪節號提示還有更多內容。"""
+    if width <= 0:
+        return ""
+    if text_width(line) + 1 <= width:
+        return line + "…"
+    trimmed = line
+    while trimmed and text_width(trimmed) + 1 > width:
+        trimmed = trimmed[:-1]
+    return trimmed + "…"
+
+
 def draw_card(
     grid: Grid,
     x: int,
@@ -357,7 +369,11 @@ def draw_card(
     for i in range(1, w - 1):
         grid.set_cell(x + i, y + 2, "─", border_fg)
 
-    lines = wrap_text(description, w - 2)[:6]
+    max_lines = h - 4  # 上框線、名稱、分隔線、下框線各佔一行
+    all_lines = wrap_text(description, w - 2)
+    lines = all_lines[:max_lines]
+    if len(all_lines) > max_lines and lines:
+        lines[-1] = _truncate_with_ellipsis(lines[-1], w - 2)
     for li, line in enumerate(lines):
         ly = y + 3 + li
         if not playable:

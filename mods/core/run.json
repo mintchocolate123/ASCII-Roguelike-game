@@ -1,0 +1,7 @@
+[
+    {"type": "battle", "tier": "normal"},
+    {"type": "battle", "tier": "normal"},
+    {"type": "battle", "tier": "elite"},
+    {"type": "rest"},
+    {"type": "battle", "tier": "boss"}
+]

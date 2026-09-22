@@ -1,0 +1,13 @@
+[
+    {"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6, "count": 5, "in_reward_pool": false},
+    {"id": "defend", "name": "防禦", "type": "skill", "cost": 1, "block": 5, "count": 4, "in_reward_pool": false},
+    {"id": "bash", "name": "重擊", "type": "attack", "cost": 2, "damage": 12, "count": 1, "in_reward_pool": false},
+    {"id": "shield_bash", "name": "盾擊", "type": "attack", "cost": 1, "damage": 5, "block": 5, "count": 0, "in_reward_pool": true},
+    {"id": "bandage", "name": "包紮", "type": "skill", "cost": 1, "heal": 6, "count": 0, "in_reward_pool": true},
+    {"id": "iron_wall", "name": "鐵壁", "type": "skill", "cost": 2, "block": 12, "count": 0, "in_reward_pool": true},
+    {"id": "execute", "name": "處決", "type": "attack", "cost": 3, "damage": 24, "count": 0, "in_reward_pool": true},
+    {"id": "flurry", "name": "連斬", "type": "attack", "cost": 1, "damage": 3, "hits": 3, "count": 0, "in_reward_pool": true},
+    {"id": "insight", "name": "洞察", "type": "skill", "cost": 0, "draw": 2, "count": 0, "in_reward_pool": true},
+    {"id": "charge", "name": "蓄力", "type": "skill", "cost": 0, "energy": 2, "count": 0, "in_reward_pool": true},
+    {"id": "last_stand", "name": "背水", "type": "attack", "cost": 1, "damage": 10, "self_damage": 3, "count": 0, "in_reward_pool": true}
+]
