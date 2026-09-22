@@ -1,0 +1,3 @@
+[
+    {"id": "strike_plus", "name": "斬擊＋", "type": "attack", "cost": 1, "damage": 8, "count": 0, "in_reward_pool": true, "overrides": "core:strike"}
+]

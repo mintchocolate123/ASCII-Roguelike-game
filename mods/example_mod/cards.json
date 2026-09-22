@@ -1,4 +1,3 @@
 [
-    {"id": "quick_stab", "name": "快刺", "type": "attack", "cost": 0, "damage": 3, "count": 0, "in_reward_pool": true},
-    {"id": "strike", "name": "斬擊＋", "type": "attack", "cost": 1, "damage": 8, "count": 0, "in_reward_pool": true, "overrides": "core:strike"}
+    {"id": "quick_stab", "name": "快刺", "type": "attack", "cost": 0, "damage": 3, "count": 0, "in_reward_pool": true}
 ]

@@ -59,8 +59,26 @@ def test_real_core_and_example_mod_load_successfully():
     assert "example_mod" in db.enabled_mods
     assert len(db.cards) >= 10
     assert len(db.enemies) == 4
-    # example_mod 的 cards.json 宣告 overrides: core:strike，應該完整取代原資料
+    # example_mod 只新增卡牌，不覆寫核心內容
+    assert db.cards["core:strike"]["damage"] == 6
+    assert "example_mod:quick_stab" in db.cards
+    # 沒有任何警告或錯誤，只允許完全乾淨的載入
+    assert not report.by_level("warning")
+    assert not report.by_level("error")
+
+
+def test_example_override_demo_mod_overrides_strike_when_enabled(tmp_path):
+    """mods/_example_override/ 預設停用（底線開頭）；把它複製成不帶底線的資料夾就能示範覆寫。"""
+    import shutil
+
+    shutil.copytree(REPO_MODS_DIR / "core", tmp_path / "core")
+    shutil.copytree(REPO_MODS_DIR / "_example_override", tmp_path / "example_override")
+
+    db, report = load_mods(tmp_path)
+    assert not report.has_fatal, report.format_text()
     assert db.cards["core:strike"]["damage"] == 8
+    infos = report.by_level("info")
+    assert any("已覆寫「core:strike」" in i for i in infos)
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +194,10 @@ def test_override_replaces_target_and_reports(tmp_path):
     db, report = load_mods(tmp_path)
     assert db.cards["core:strike"]["damage"] == 9
     assert "addon:strike_plus" not in db.cards  # 覆寫會完整取代原資料，不會新增一筆
-    warnings = report.by_level("warning")
-    assert any("已覆寫「core:strike」" in w for w in warnings), report.format_text()
+    # 覆寫成功是資訊等級，不是警告
+    assert not any("已覆寫" in w for w in report.by_level("warning"))
+    infos = report.by_level("info")
+    assert any("已覆寫「core:strike」" in i and "mods/addon/cards.json" in i for i in infos), report.format_text()
 
 
 def test_override_missing_target_is_skipped_with_warning(tmp_path):
@@ -368,7 +388,7 @@ def test_missing_manifest_disables_mod(tmp_path):
     (tmp_path / "broken").mkdir()
     db, report = load_mods(tmp_path)
     errors = report.by_level("error")
-    assert any("broken" in e and "找不到 mod.json" in e for e in errors)
+    assert any("mods/broken/mod.json" in e and "找不到這個檔案" in e for e in errors)
 
 
 def test_malformed_manifest_json_disables_mod(tmp_path):
@@ -392,13 +412,16 @@ def test_no_core_is_fatal(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_format_field_error_translates_range_error():
+def test_format_field_error_translates_range_error_with_constraint():
     try:
         CardDef(id="x", name="x", type="attack", cost=99)
     except ValidationError as exc:
         errors = exc.errors()
-    msg = format_field_error("core", "cards.json", 0, errors[0])
-    assert msg == "core：cards.json，第 1 筆，欄位 cost：數值超出範圍，收到的值：99"
+    msg = format_field_error("core", "cards.json", 0, errors[0], record_id="x", model_cls=CardDef)
+    assert msg == (
+        "mods/core/cards.json，第 1 筆（id：x），欄位 cost：數值超出範圍，必須介於 0 到 5，"
+        "收到的值：99，這筆資料已跳過。"
+    )
 
 
 def test_format_field_error_translates_missing_field():
@@ -406,17 +429,39 @@ def test_format_field_error_translates_missing_field():
         CardDef(id="x", type="attack", cost=1)  # 缺少 name
     except ValidationError as exc:
         errors = exc.errors()
-    msg = format_field_error("core", "cards.json", 2, errors[0])
+    msg = format_field_error("core", "cards.json", 2, errors[0], model_cls=CardDef)
     assert "第 3 筆" in msg
     assert "欄位 name：缺少欄位" in msg
+    assert "這筆資料已跳過。" in msg
+
+
+def test_format_field_error_translates_literal_enum_with_options():
+    try:
+        CardDef(id="x", name="x", type="not_a_type", cost=1)
+    except ValidationError as exc:
+        errors = exc.errors()
+    msg = format_field_error("core", "cards.json", 0, errors[0], model_cls=CardDef)
+    assert "只能是 attack、skill、power 其中之一" in msg
+
+
+def test_format_field_error_without_record_id_omits_parentheses():
+    try:
+        CardDef(id="x", type="attack", cost=1)
+    except ValidationError as exc:
+        errors = exc.errors()
+    msg = format_field_error("core", "cards.json", 0, errors[0], model_cls=CardDef)
+    assert "（id：" not in msg
+    assert "mods/core/cards.json，第 1 筆，欄位" in msg
 
 
 def test_load_report_format_text_includes_level_labels():
     report = LoadReport()
+    report.info("i1")
     report.warning("w1")
     report.error("e1")
     report.fatal("f1")
     text = report.format_text()
+    assert "【資訊】 i1" in text
     assert "【警告】 w1" in text
     assert "【錯誤】 e1" in text
     assert "【致命錯誤】 f1" in text

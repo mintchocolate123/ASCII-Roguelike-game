@@ -9,13 +9,12 @@ from pydantic import ValidationError
 from ..cardtext import CardTextError, resolve_description
 from ..draw import wrap_text
 from .models import CardDef, EnemyDef, ModManifest, RunStage
-from .report import LoadReport, format_field_error
+from .report import LoadReport, format_field_error, format_location
 
 ART_MAX_WIDTH = 24
 ART_MAX_HEIGHT = 10
 DESCRIPTION_WIDTH = 10
 DESCRIPTION_MAX_LINES = 6
-FORBIDDEN_LEADING = "，。、；：！？）」』…"
 
 
 class ModDatabase:
@@ -24,6 +23,9 @@ class ModDatabase:
         self.enemies: dict[str, dict] = {}
         self.run_stages: list[dict] = []
         self.enabled_mods: list[str] = []
+        # full_id -> (mod_id, filename, index)，用來在重複 id 時指出原本保留的那筆在哪裡
+        self._card_origins: dict[str, tuple[str, str, int]] = {}
+        self._enemy_origins: dict[str, tuple[str, str, int]] = {}
 
 
 def load_mods(mods_dir: str | Path) -> tuple[ModDatabase, LoadReport]:
@@ -66,26 +68,30 @@ def _scan_manifests(mods_dir: Path, report: LoadReport) -> tuple[dict[str, ModMa
 
         manifest_path = entry / "mod.json"
         if not manifest_path.exists():
-            report.error(f"{entry.name}：找不到 mod.json，已停用整個 mod。")
+            report.error(f"{format_location(entry.name, 'mod.json')}：找不到這個檔案，已停用整個 mod。")
             continue
 
         try:
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            report.error(f"{entry.name}：mod.json 不是合法的 JSON（{exc}），已停用整個 mod。")
+            report.error(f"{format_location(entry.name, 'mod.json')} 不是合法的 JSON（{exc}），已停用整個 mod。")
             continue
 
         try:
             manifest = ModManifest(**raw)
         except ValidationError as exc:
             for err in exc.errors():
-                report.error(format_field_error(entry.name, "mod.json", None, err))
-            report.error(f"{entry.name}：mod.json 驗證失敗，已停用整個 mod。")
+                report.error(
+                    format_field_error(
+                        entry.name, "mod.json", None, err,
+                        model_cls=ModManifest, consequence="已停用整個 mod。",
+                    )
+                )
             continue
 
         if manifest.id != entry.name:
             report.error(
-                f"{entry.name}：mod.json 的 id「{manifest.id}」與資料夾名稱不一致，已停用整個 mod。"
+                f"{format_location(entry.name, 'mod.json')}：id「{manifest.id}」與資料夾名稱不一致，已停用整個 mod。"
             )
             continue
 
@@ -140,7 +146,7 @@ def _topo_sort(manifests: dict[str, ModManifest], report: LoadReport) -> list[st
         visit(mod_id, [])
 
     for mod_id, reason in disabled_reason.items():
-        report.error(f"{mod_id}：{reason}，已停用整個 mod。")
+        report.error(f"{format_location(mod_id, 'mod.json')}：{reason}，已停用整個 mod。")
 
     return order
 
@@ -150,16 +156,21 @@ def _topo_sort(manifests: dict[str, ModManifest], report: LoadReport) -> list[st
 # ---------------------------------------------------------------------------
 
 
+def _record_id(raw: dict) -> str | None:
+    value = raw.get("id")
+    return str(value) if isinstance(value, str) else None
+
+
 def _load_json_list(path: Path, mod_id: str, filename: str, report: LoadReport) -> list:
     if not path.exists():
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        report.error(f"{mod_id}：{filename} 不是合法的 JSON（{exc}）。")
+        report.error(f"{format_location(mod_id, filename)} 不是合法的 JSON（{exc}）。")
         return []
     if not isinstance(raw, list):
-        report.error(f"{mod_id}：{filename} 的內容應該是一個清單。")
+        report.error(f"{format_location(mod_id, filename)} 的內容應該是一個清單。")
         return []
     return raw
 
@@ -168,54 +179,65 @@ def _validate_records(model_cls, raw_list: list, mod_id: str, filename: str, rep
     valid = []
     for idx, raw in enumerate(raw_list):
         if not isinstance(raw, dict):
-            report.warning(f"{mod_id}：{filename}，第 {idx + 1} 筆：不是合法的物件，已跳過。")
+            report.warning(f"{format_location(mod_id, filename, idx)}：不是合法的物件，這筆資料已跳過。")
             continue
         try:
             model = model_cls(**raw)
         except ValidationError as exc:
+            record_id = _record_id(raw)
             for err in exc.errors():
-                report.warning(format_field_error(mod_id, filename, idx, err))
+                report.warning(
+                    format_field_error(
+                        mod_id, filename, idx, err,
+                        record_id=record_id, model_cls=model_cls,
+                    )
+                )
             continue
         valid.append(model)
     return valid
 
 
-def _validate_card_description(card: CardDef, mod_id: str, filename: str, report: LoadReport) -> bool:
+def _validate_card_description(card: CardDef, idx: int, mod_id: str, filename: str, report: LoadReport) -> bool:
     """回傳 True 表示這張卡的描述有效。"""
     data = card.model_dump(exclude_none=True)
+    location = format_location(mod_id, filename, idx, card.id)
 
     if card.effect and not card.description:
         report.warning(
-            f"{mod_id}：{filename}，卡牌 {card.id}：有 effect 的卡牌必須填寫 description，因為引擎無法從程式推測效果。"
+            f"{location}：有 effect 的卡牌必須填寫 description，因為引擎無法從程式推測效果，這筆資料已跳過。"
         )
         return False
 
     try:
         text = resolve_description(data)
     except CardTextError as exc:
-        report.warning(f"{mod_id}：{filename}，卡牌 {card.id}：{exc}")
+        report.warning(f"{location}：{exc}這筆資料已跳過。")
         return False
 
     lines = wrap_text(text, DESCRIPTION_WIDTH)
     if len(lines) > DESCRIPTION_MAX_LINES:
         report.warning(
-            f"{mod_id}：{filename}，卡牌 {card.id}：描述超過卡片空間，"
-            f"換行後共 {len(lines)} 行，上限 {DESCRIPTION_MAX_LINES} 行。"
+            f"{location}：描述超過卡片空間，換行後共 {len(lines)} 行，"
+            f"上限 {DESCRIPTION_MAX_LINES} 行，這筆資料已跳過。"
         )
         return False
     return True
 
 
-def _validate_art(enemy: EnemyDef, mod_dir: Path, mod_id: str, filename: str, report: LoadReport) -> list[str] | None:
+def _validate_art(
+    enemy: EnemyDef, idx: int, mod_dir: Path, mod_id: str, filename: str, report: LoadReport
+) -> list[str] | None:
+    location = format_location(mod_id, filename, idx, enemy.id)
     art_path = mod_dir / "art" / enemy.art
+
     if not art_path.exists():
-        report.warning(f"{mod_id}：{filename}，敵人 {enemy.id}：找不到 ASCII 圖檔「{enemy.art}」，已停用。")
+        report.warning(f"{location}：找不到 ASCII 圖檔「{enemy.art}」，已停用。")
         return None
 
     try:
         text = art_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        report.warning(f"{mod_id}：{filename}，敵人 {enemy.id}：ASCII 圖檔無法以 UTF-8 讀取，已停用。")
+        report.warning(f"{location}：ASCII 圖檔無法以 UTF-8 讀取，已停用。")
         return None
 
     lines = text.splitlines()
@@ -227,16 +249,13 @@ def _validate_art(enemy: EnemyDef, mod_dir: Path, mod_id: str, filename: str, re
             code = ord(ch)
             if code < 32 or code > 126:
                 report.warning(
-                    f"{mod_id}：{filename}，敵人 {enemy.id}：ASCII 圖檔第 {row + 1} 行含有不允許的字元"
+                    f"{location}：ASCII 圖檔第 {row + 1} 行含有不允許的字元"
                     f"（{ch!r}，字元碼 {code}），只允許字元碼 32 到 126，已停用。"
                 )
                 return None
 
     if len(lines) > ART_MAX_HEIGHT or any(len(line) > ART_MAX_WIDTH for line in lines):
-        report.warning(
-            f"{mod_id}：{filename}，敵人 {enemy.id}：ASCII 圖檔超出最大尺寸 "
-            f"{ART_MAX_WIDTH}×{ART_MAX_HEIGHT}，已裁切。"
-        )
+        report.warning(f"{location}：ASCII 圖檔超出最大尺寸 {ART_MAX_WIDTH}×{ART_MAX_HEIGHT}，已裁切。")
         lines = [line[:ART_MAX_WIDTH] for line in lines[:ART_MAX_HEIGHT]]
 
     return lines
@@ -248,58 +267,69 @@ def _full_id(mod_id: str, content_id: str) -> str:
 
 def _merge_record(
     db_dict: dict[str, dict],
+    origins: dict[str, tuple[str, str, int]],
     mod_id: str,
     filename: str,
+    index: int,
     content_id: str,
     data: dict,
     overrides: str | None,
     report: LoadReport,
 ) -> None:
+    location = format_location(mod_id, filename, index, content_id)
+
     if overrides:
         if ":" not in overrides:
             report.warning(
-                f"{mod_id}：{filename}，覆寫目標「{overrides}」格式不正確，應該是 mod_id:content_id，已跳過。"
+                f"{location}：覆寫目標「{overrides}」格式不正確，應該是 mod_id:content_id，這筆資料已跳過。"
             )
             return
         if overrides not in db_dict:
-            report.warning(f"{mod_id}：{filename}，找不到要覆寫的目標「{overrides}」，已跳過。")
+            report.warning(f"{location}：找不到要覆寫的目標「{overrides}」，這筆資料已跳過。")
             return
         db_dict[overrides] = data
-        report.warning(f"{mod_id}：{filename}，已覆寫「{overrides}」。")
+        report.info(f"{location}：已覆寫「{overrides}」。")
         return
 
     full_id = _full_id(mod_id, content_id)
     if full_id in db_dict:
-        report.warning(f"{mod_id}：{filename}，重複的 id「{full_id}」，已跳過這一筆。")
+        kept_mod, kept_file, kept_idx = origins[full_id]
+        kept_location = format_location(kept_mod, kept_file, kept_idx, content_id)
+        report.warning(
+            f"重複的 id「{full_id}」：保留 {kept_location}，跳過 {location}，這筆資料已跳過。"
+        )
         return
     db_dict[full_id] = data
+    origins[full_id] = (mod_id, filename, index)
 
 
 def _load_mod_content(mod_id: str, mod_dir: Path, db: ModDatabase, report: LoadReport) -> None:
     cards_raw = _load_json_list(mod_dir / "cards.json", mod_id, "cards.json", report)
     cards = _validate_records(CardDef, cards_raw, mod_id, "cards.json", report)
-    for card in cards:
-        if not _validate_card_description(card, mod_id, "cards.json", report):
+    for idx, card in enumerate(cards):
+        if not _validate_card_description(card, idx, mod_id, "cards.json", report):
             continue
         data = card.model_dump(exclude_none=True)
         data["full_id"] = _full_id(mod_id, card.id)
-        _merge_record(db.cards, mod_id, "cards.json", card.id, data, card.overrides, report)
+        _merge_record(db.cards, db._card_origins, mod_id, "cards.json", idx, card.id, data, card.overrides, report)
 
     enemies_raw = _load_json_list(mod_dir / "enemies.json", mod_id, "enemies.json", report)
     enemies = _validate_records(EnemyDef, enemies_raw, mod_id, "enemies.json", report)
-    for enemy in enemies:
-        art_lines = _validate_art(enemy, mod_dir, mod_id, "enemies.json", report)
+    for idx, enemy in enumerate(enemies):
+        art_lines = _validate_art(enemy, idx, mod_dir, mod_id, "enemies.json", report)
         if art_lines is None:
             continue
         data = enemy.model_dump(exclude_none=True)
         data["art"] = art_lines
         data["full_id"] = _full_id(mod_id, enemy.id)
-        _merge_record(db.enemies, mod_id, "enemies.json", enemy.id, data, enemy.overrides, report)
+        _merge_record(
+            db.enemies, db._enemy_origins, mod_id, "enemies.json", idx, enemy.id, data, enemy.overrides, report
+        )
 
     run_path = mod_dir / "run.json"
     if run_path.exists():
         if mod_id != "core":
-            report.warning(f"{mod_id}：只有 core 可以提供 run.json，這個檔案會被忽略。")
+            report.warning(f"{format_location(mod_id, 'run.json')}：只有 core 可以提供 run.json，這個檔案會被忽略。")
         else:
             run_raw = _load_json_list(run_path, mod_id, "run.json", report)
             stages = _validate_records(RunStage, run_raw, mod_id, "run.json", report)
@@ -314,4 +344,6 @@ def _check_cross_references(db: ModDatabase, report: LoadReport) -> None:
         if stage["type"] == "battle":
             tier = stage.get("tier")
             if tier not in tiers_available:
-                report.error(f"core：run.json，第 {idx + 1} 筆：tier「{tier}」沒有任何敵人可用。")
+                report.error(
+                    f"{format_location('core', 'run.json', idx)}：tier「{tier}」沒有任何敵人可用。"
+                )

@@ -1,10 +1,12 @@
 """2 階段驗收 demo：
 
 1. 載入目前 repo 裡的 mods/（core + example_mod），印出載入報告。
-2. 在暫時的資料夾裡建立幾個故意寫錯的 mod，示範各種錯誤訊息長什麼樣子，
+2. 把預設停用的 mods/_example_override/ 複製成不帶底線的資料夾，示範覆寫 core:strike。
+3. 在暫時的資料夾裡建立幾個故意寫錯的 mod，示範各種錯誤訊息長什麼樣子，
    結束後暫時資料夾會自動刪除，不會留在 repo 裡。
 """
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -36,20 +38,37 @@ def _write_mod(mods_dir: Path, mod_id: str, *, depends=None, cards=None, enemies
 
 def demo_real_mods() -> None:
     print("=" * 70)
-    print("Part 1：載入目前 repo 的 mods/（core + example_mod）")
+    print("Part 1：載入目前 repo 的 mods/（core + example_mod，不含覆寫）")
     print("=" * 70)
     db, report = load_mods(REPO_ROOT / "mods")
     print(report.format_text())
     print()
     print(f"啟用的 mod：{db.enabled_mods}")
     print(f"卡牌數量：{len(db.cards)}　敵人數量：{len(db.enemies)}　關卡數量：{len(db.run_stages)}")
-    print(f"core:strike 傷害（應該被 example_mod 覆寫成 8）：{db.cards['core:strike']['damage']}")
+    print(f"core:strike 傷害（example_mod 這次不會動它）：{db.cards['core:strike']['damage']}")
     print()
+
+
+def demo_override_mod() -> None:
+    print("=" * 70)
+    print("Part 2：mods/_example_override/ 預設停用，複製成不帶底線的資料夾後示範覆寫")
+    print("=" * 70)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sandbox = Path(tmp)
+        shutil.copytree(REPO_ROOT / "mods" / "core", sandbox / "core")
+        shutil.copytree(REPO_ROOT / "mods" / "_example_override", sandbox / "example_override")
+
+        db, report = load_mods(sandbox)
+        print(report.format_text())
+        print()
+        print(f"core:strike 傷害（已被覆寫成 8）：{db.cards['core:strike']['damage']}")
+        print()
 
 
 def demo_broken_mods() -> None:
     print("=" * 70)
-    print("Part 2：故意寫錯的暫時 mod，示範各種錯誤訊息")
+    print("Part 3：故意寫錯的暫時 mod，示範各種錯誤訊息")
     print("=" * 70)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -81,6 +100,8 @@ def demo_broken_mods() -> None:
             cards=[
                 # 欄位錯誤：cost 超出 0-5 的範圍
                 {"id": "too_expensive", "name": "天價卡", "type": "attack", "cost": 99, "damage": 1},
+                # 欄位錯誤：type 不在允許的選項中
+                {"id": "bad_type", "name": "壞類型", "type": "magic", "cost": 1, "damage": 1},
                 # 卡名太長
                 {"id": "long_name", "name": "這是一個超過十格寬的卡牌名稱", "type": "attack", "cost": 1, "damage": 1},
                 # 描述超過 6 行
@@ -145,6 +166,7 @@ def demo_broken_mods() -> None:
 
 def main() -> None:
     demo_real_mods()
+    demo_override_mod()
     demo_broken_mods()
 
 
