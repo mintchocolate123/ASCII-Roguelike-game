@@ -18,7 +18,7 @@
 ## 目錄結構
 
 ```
-card_game/
+（repo 根目錄）
 ├── main.py                     啟動點：解析參數（--terminal）、載入 mod、進入主迴圈
 ├── engine/
 │   ├── grid.py                 字元格緩衝區
