@@ -22,8 +22,10 @@
 ├── main.py                     啟動點：解析參數（--terminal）、載入 mod、進入主迴圈
 ├── engine/
 │   ├── grid.py                 字元格緩衝區
-│   ├── draw.py                 繪圖函式（文字、框線、血條、ASCII 圖、卡牌）
+│   ├── draw.py                 繪圖函式（文字、換行、框線、血條、ASCII 圖、卡牌）
 │   ├── layout.py               畫面區塊座標常數
+│   ├── palette.py              具名色表
+│   ├── cardtext.py             卡牌描述：佔位符代入與自動產生
 │   ├── actions.py              抽象輸入動作
 │   ├── fx.py                   視覺效果佇列
 │   ├── run.py                  一局遊戲的進度
@@ -54,6 +56,7 @@
 │   │   ├── art/
 │   │   └── rules.py
 │   └── example_mod/            範例 mod，學生複製此資料夾開始製作
+├── tools/                      開發用的 demo 與工具，不放在根目錄
 ├── assets/fonts/SarasaFixedTC-Regular.ttf
 └── tests/
 ```
@@ -63,19 +66,138 @@
 - 畫面大小為 96×32 格，每格 10×20 像素，視窗為 960×640。
 - `Cell` 包含 `char`、`fg`、`bg` 和 `wide_tail`（是否為寬字元後半格）。
 - 寫入 grid 時要把 dirty 設為 True；渲染器畫完後清除。
-- `draw.py` 使用 `unicodedata.east_asian_width()` 判斷寬度：`W` 和 `F` 佔兩格，其他佔一格。寬字元的第二格標記為 `wide_tail`，渲染時略過。
+- `draw.py` 使用 `unicodedata.east_asian_width()` 判斷寬度：`W` 和 `F` 佔兩格，其他（包含 `A` 寬度不明確的字元，例如 ─ ═ ║ █ ░ ◆ ◇ ●）一律佔一格。附帶字型 Sarasa Fixed 會用半形寬度繪製這些字元，因此畫面與此規則一致。
+- 寬字元的第二格標記為 `wide_tail`，渲染時略過。寬字元只剩一格空間時整個字不畫。覆寫寬字元的前半格或後半格時，另一半要清成空白。
 - 提供 `text_width(s)` 給排版計算使用。
 - 超出畫面範圍的寫入直接裁切，不拋出例外。
-- 顏色使用具名色表，例如 white、red、green、cyan、yellow、blue、gray、black，由 `draw.py` 定義，兩種渲染器各自對應到 RGB 或 ANSI 色碼。
 
-`layout.py` 定義各區塊位置，scene 不得直接寫入座標數字：
+### 換行：`wrap_text(text, width) -> list[str]`
 
-- 敵人 ASCII 圖：上方中央，24×10
-- 敵人狀態列：敵人圖下方，包含名稱、血條、護盾和意圖
-- 戰鬥紀錄：右側，寬 30 格
-- 玩家狀態列：中下方，包含血條、護盾、能量、抽牌堆數與棄牌堆數
-- 手牌：底部，每張 14×7，最多 7 張
-- 卡牌內部可顯示 6 個中文字寬度的名稱，因此 CardDef.name 最多 6 字
+- 以顯示寬度計算，不以字元數計算。
+- 中文字之間可以斷行；連續的 ASCII 英數字（例如 `10`、`HP`）視為一個單位，不可從中間斷開。單位本身超過 width 時才強制切斷。
+- 行首禁則：`，。、；：！？）」』…` 不可出現在行首。遇到時採用「推出式」處理：把上一行的最後一個字連同標點一起移到下一行，不可讓標點超出 width（卡牌框線緊鄰文字，超出會蓋掉框線）。
+- 原文中的 `\n` 視為強制換行。
+- 必須有測試：剛好等於 width、行首標點、數字不被切斷、強制換行、空字串。
+
+### 色表（engine/palette.py）
+
+色表使用語意名稱，兩種渲染器各自對應：pygame 使用下列 RGB，終端機對應到最接近的 ANSI 256 色。
+
+| 名稱 | RGB | 用途 |
+|---|---|---|
+| bg | #0E0C0A | 背景 |
+| frame | #B08D57 | 外框與分隔線（暗金） |
+| frame_dim | #5C4A2E | 次要分隔線 |
+| text | #D8D2C4 | 一般文字 |
+| dim | #6E6658 | 次要文字、無法打出的卡牌 |
+| highlight | #FFF4D6 | 滑鼠停留、選取中 |
+| hp | #C0392B | 血條與扣血數字 |
+| hp_empty | #3A2A26 | 血條空的部分 |
+| block | #4A90C2 | 護盾 |
+| energy | #E0B23C | 能量與卡牌費用 |
+| attack | #C8553D | 攻擊牌框線、攻擊意圖 |
+| skill | #4A7FB5 | 技能牌框線、防禦意圖 |
+| power | #C9A227 | 能力牌框線 |
+| status_good | #6FAF5F | 正面狀態（第二階段） |
+| status_bad | #9B59B6 | 負面狀態（第二階段） |
+| keyword | #E8C170 | 描述中的【關鍵字】 |
+
+敵人 ASCII 圖的 `color` 欄位使用另一組基本色名稱：white、red、green、cyan、yellow、blue、gray、magenta。
+
+## 畫面版面（layout.py）
+
+風格為「厚重奇幻」：雙線外框、暗金框線、標題帶。以下是參考畫面，座標以下面的列、欄定義為準（從 0 開始）。
+
+```
+╔══════════════════════════════════════════════════════════════╦═════════════════════════════╗
+║  ◆ 地下第 3 層                                    回合 4     ║       ─── 戰鬥紀錄 ───      ║
+╠══════════════════════════════════════════════════════════════╣                             ║
+║                          .-"""-.                             ║  › 斬擊 造成 6 傷害         ║
+║                         /  o o  \                            ║  › 哥布林 獲得 6 護盾       ║
+║                        |    ^    |                           ║  › 你受到 5 傷害            ║
+║                         \ \___/ /                            ║                             ║
+║                        __'-----'__                           ║                             ║
+║                       /  |     |  \                          ║                             ║
+║                      /   |_____|   \                         ║                             ║
+║                          /     \                             ║                             ║
+║                         /_/   \_\                            ║                             ║
+║                                                              ║                             ║
+║                ════════[ 哥布林 ]════════                    ║                             ║
+║             HP █████████████░░░░░░░  24/35    盾 6           ║                             ║
+║                     >> 準備攻擊 8 <<                         ║                             ║
+║                     中毒 3   虛弱 1                          ║                             ║
+╠══════════════════════════════════════════════════════════════╩═════════════════════════════╣
+║  [ 冒險者 ]  HP ████████████████░░░░ 42/50    盾 5    能量 ◆◆◇    牌堆 7 / 棄牌 3          ║
+║              力量 2                                                                        ║
+╚════════════════════════════════════════════════════════════════════════════════════════════╝
+   ╔◆1════════╗ ╔◆1════════╗ ╔◆1════════╗ ╔◆0════════╗ ╔◆1════════╗
+   ║   斬擊   ║ ║   連斬   ║ ║   背水   ║ ║   洞察   ║ ║   盾擊   ║
+   ╟──────────╢ ╟──────────╢ ╟──────────╢ ╟──────────╢ ╟──────────╢
+   ║造成 6 點 ║ ║造成 3 點 ║ ║造成 10 點║ ║抽 2 張   ║ ║造成 5 點 ║
+   ║傷害。    ║ ║傷害，重複║ ║傷害。自己║ ║牌。      ║ ║傷害，獲得║
+   ║          ║ ║3 次。    ║ ║失去 3 點 ║ ║          ║ ║5 點護盾。║
+   ║          ║ ║          ║ ║生命。    ║ ║          ║ ║          ║
+   ║          ║ ║          ║ ║          ║ ║          ║ ║          ║
+   ║          ║ ║          ║ ║          ║ ║          ║ ║          ║
+   ╚═══攻擊═══╝ ╚═══攻擊═══╝ ╚═══攻擊═══╝ ╚═══技能═══╝ ╚═══攻擊═══╝
+        [1-7] 出牌        [E] 結束回合        滑鼠停留：查看詳細        [F5] 重新載入
+```
+
+（上圖在非 Sarasa 字型中，含中文的行可能看起來不齊，以下方座標為準。）
+
+### 主框（列 0 到 20）
+
+- 外框欄 0 與欄 95。左面板內容欄 1 到 62，左右分隔線在欄 63，右面板內容欄 64 到 94。
+- 列 0：上框線，欄 63 為 `╦`。
+- 列 1：左側顯示樓層（`◆ 地下第 N 層`）與回合數；右側顯示面板標題。
+- 列 2：只在左面板畫分隔線（欄 0 `╠`、欄 63 `╣`），右面板繼續延伸。
+- 列 3 到 12：敵人 ASCII 圖區域，24×10，在左面板內水平置中。
+- 列 13：敵人名稱標題帶，格式為 `════[ 名稱 ]════`，置中，框線用 frame 色，名稱用 text 色。
+- 列 14：敵人血條（寬 20，`█` 與 `░`）、`目前/最大`、護盾（護盾為 0 時不顯示）。
+- 列 15：意圖，格式為 `>> 準備攻擊 N <<` 或 `>> 準備防禦 N <<`，攻擊用 attack 色，防禦用 skill 色。
+- 列 16：敵人狀態列，第一階段留空。
+- 列 17：全寬分隔線，欄 0 `╠`、欄 63 `╩`、欄 95 `╣`。
+- 列 18：玩家狀態，包含 `[ 冒險者 ]`、血條（寬 20）、護盾、能量（`◆` 為剩餘、`◇` 為已用，energy 色）、牌堆數與棄牌數。
+- 列 19：玩家狀態列，第一階段留空。
+- 列 20：下框線。
+
+### 右面板（列 3 到 16，寬 31）
+
+- 平常顯示戰鬥紀錄：最新的在最下面，每則以 `› ` 開頭，用 `wrap_text` 換行，寬度 29，超出的舊紀錄捨棄。
+- 檢視卡牌時切換成卡牌詳細資訊：名稱、費用、類型，以及以寬度 29 換行的完整描述。第二階段會在描述下方加入關鍵字說明。
+
+### 手牌（列 21 到 30）
+
+- 每張卡寬 12、高 10，最多 7 張。第 i 張（從 0 開始）的左上角是欄 `3 + i * 13`、列 21。
+- 卡牌結構：
+  - 第 0 列：上框線，費用嵌在左側，例如 `╔◆1════════╗`，費用數字用 energy 色。
+  - 第 1 列：卡名置中，內部寬 10，最多 5 個中文字。
+  - 第 2 列：`╟──────────╢` 分隔線。
+  - 第 3 到 8 列：描述，最多 6 行，每行寬 10。
+  - 第 9 列：下框線，類型文字置中，例如 `╚═══攻擊═══╝`。
+- 卡牌框線顏色依類型決定：攻擊為 attack、技能為 skill、能力為 power。
+- 能量不足以打出的卡，框線與文字全部改用 dim 色。滑鼠停留或檢視中的卡牌，框線改用 highlight 色。
+- 描述中以 `【】` 包住的文字使用 keyword 色。
+
+### 操作提示（列 31）
+
+在列 31 置中顯示目前可用的按鍵提示，使用 dim 色。
+
+## 卡牌描述（engine/cardtext.py）
+
+- CardDef 的 `description` 是選填欄位，可使用佔位符 `{damage}`、`{hits}`、`{block}`、`{heal}`、`{draw}`、`{energy}`、`{self_damage}`。引擎會用卡牌資料的值代入。
+- 佔位符只能引用這張卡有值的數值欄位。引用不存在的名稱或沒有值的欄位時，這張卡判定無效，並在報告中顯示是哪個佔位符有問題。
+- 沒有填寫 `description` 時，依照下列順序自動產生，只串接有值的欄位：
+  1. damage，並有 hits：`造成 {damage} 點傷害，重複 {hits} 次。`
+  2. damage，沒有 hits：`造成 {damage} 點傷害。`
+  3. block：`獲得 {block} 點護盾。`
+  4. heal：`回復 {heal} 點生命。`
+  5. draw：`抽 {draw} 張牌。`
+  6. energy：`獲得 {energy} 點能量。`
+  7. self_damage：`失去 {self_damage} 點生命。`
+- 有 `effect` 的卡牌（第二階段）必須填寫 `description`，因為引擎無法從程式推測效果。
+- 描述代入數值後，以寬度 10 換行，超過 6 行時這張卡無效。報告格式例如：「example_mod：cards.json，卡牌 fireball：描述超過卡片空間，換行後共 8 行，上限 6 行」。
+- 第二階段加入力量等修正後，佔位符會代入修正後的數值；和基礎值不同時，數字以 status_good 或 hp 色顯示。第一階段不需要實作這一點，但 cardtext 的介面要允許傳入修正後的數值。
 
 ## 第二層：渲染與輸入
 
@@ -86,17 +208,19 @@ class Renderer:
     def supports_animation(self) -> bool: ...
 ```
 
-- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()` 和 `Quit()`。
+- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()`、`Quit()` 和 `Inspect(index)`。`Inspect(None)` 表示結束檢視。
 - pygame 版的輸入對應：
   - 按鍵 1 到 7 對應 PlayCard 或 Choose
   - 滑鼠點擊卡牌區域對應 PlayCard
+  - 滑鼠移入卡牌區域對應 `Inspect(i)`，移出所有卡牌時對應 `Inspect(None)`
   - E 對應 EndTurn
   - Enter 對應 Confirm
   - F5 對應 Reload
   - Esc 對應 Back
+- 終端機版輸入 `?2` 對應 `Inspect(1)`，輸入 `?` 對應 `Inspect(None)`。
 - pygame 版使用 `(char, fg, bg)` 作為 key 快取 `font.render()` 結果，只有 grid dirty 時才重畫。
 - 終端機版使用 ANSI 色碼整頁輸出；`poll_actions()` 以 `input()` 阻塞讀取，並把輸入解析成 Action。`supports_animation()` 回傳 False。
-- 終端機版啟動時要把 stdout 設為 UTF-8，以避免 Windows cp950 亂碼。
+- 終端機版啟動時要把 stdout 設為 UTF-8，以避免 Windows cp950 亂碼。終端機寬度小於 96 欄或高度小於 33 列時，顯示中文提示要求使用者放大視窗，不要輸出跑版的畫面。
 - 主迴圈：`actions = renderer.poll_actions()`，把 actions 交給 `scene.handle()` 後呼叫 `scene.update(dt)`、`scene.draw(grid)`，最後 `renderer.present(grid)`。
 
 ## 第三層：mod 系統
@@ -119,10 +243,11 @@ class Renderer:
 2. 讀取並驗證每個 `mod.json`。
 3. 依照 `depends` 進行拓撲排序，core 永遠最先。缺少依賴或循環依賴時，停用相關 mod。
 4. 依序讀取 `cards.json`、`enemies.json`、`run.json`（只有 core 可以提供 run.json），轉換成 Pydantic 模型。所有資料檔都是選填。
-5. 讀取並驗證 ASCII 圖檔：路徑相對於該 mod 的 `art/`；最大 24×10；只允許字元碼 32 到 126。尺寸超出時裁切並產生警告，出現非法字元時該敵人無效。
-6. 檢查跨檔參照：run.json 中每個 tier 至少要有一個敵人，overrides 的目標必須存在。
-7. 合併到全域資料庫。
-8. 第二階段：載入 mod 的 `scripts/*.py` 並註冊 class，再檢查 JSON 中的 `effect` 是否有對應的已註冊 class。
+5. 驗證卡牌描述：代入佔位符、換行並檢查行數，規則見「卡牌描述」一節。
+6. 讀取並驗證 ASCII 圖檔：路徑相對於該 mod 的 `art/`；最大 24×10；只允許字元碼 32 到 126。尺寸超出時裁切並產生警告，出現非法字元時該敵人無效。
+7. 檢查跨檔參照：run.json 中每個 tier 至少要有一個敵人，overrides 的目標必須存在。
+8. 合併到全域資料庫。
+9. 第二階段：載入 mod 的 `scripts/*.py` 並註冊 class，再檢查 JSON 中的 `effect` 是否有對應的已註冊 class。
 
 ### 錯誤等級
 
@@ -136,7 +261,9 @@ class Renderer:
 
 ```python
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from engine.draw import text_width
 
 ID_PATTERN = r"^[a-z][a-z0-9_]*$"
 
@@ -149,8 +276,10 @@ class ModManifest(BaseModel):
 
 class CardDef(BaseModel):
     id: str = Field(pattern=ID_PATTERN)
-    name: str = Field(max_length=6)
+    name: str
+    type: Literal["attack", "skill", "power"]
     cost: int = Field(ge=0, le=5)
+    description: Optional[str] = None            # 可用 {damage} 等佔位符；省略時自動產生
     count: int = Field(default=1, ge=0)          # 放入初始牌組的張數，0 表示只出現在獎勵池
     in_reward_pool: bool = True
     damage: Optional[int] = Field(default=None, ge=0)
@@ -163,19 +292,33 @@ class CardDef(BaseModel):
     effect: Optional[str] = None                 # 第二階段：註冊表中的完整 id
     overrides: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def name_fits_card(cls, v: str) -> str:
+        if text_width(v) > 10:
+            raise ValueError("卡名太長：顯示寬度最多 10 格（5 個中文字）")
+        return v
+
 class EnemyAction(BaseModel):
     type: Literal["attack", "block"]
     value: int = Field(ge=0)
 
 class EnemyDef(BaseModel):
     id: str = Field(pattern=ID_PATTERN)
-    name: str = Field(max_length=8)
+    name: str
     tier: Literal["normal", "elite", "boss"]
     hp: int = Field(ge=1)
     art: str
     color: str = "white"
     actions: list[EnemyAction] = Field(min_length=1)
     overrides: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def name_fits_band(cls, v: str) -> str:
+        if text_width(v) > 16:
+            raise ValueError("敵人名稱太長：顯示寬度最多 16 格（8 個中文字）")
+        return v
 
 class RunStage(BaseModel):
     type: Literal["battle", "rest"]
@@ -217,13 +360,13 @@ class RunStage(BaseModel):
 player dict 必要欄位：`name`、`hp`、`max_hp`、`block`、`energy`、`draw_pile`、`hand`、`discard`。
 enemy dict 必要欄位：`id`、`name`、`hp`、`max_hp`、`block`、`actions`、`action_index`、`art`、`color`。
 
-rules.py 不處理任何檔案讀取。第一版必須支援 damage、block 和 heal。hits、draw、energy 和 self_damage 保留給學生作為課後作業，引擎要能正常處理「卡牌有這些欄位，但規則沒有處理」的情況。
+rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引擎的 cardtext 負責。第一版必須支援 damage、block 和 heal。hits、draw、energy 和 self_damage 保留給學生作為課後作業，引擎要能正常處理「卡牌有這些欄位，但規則沒有處理」的情況。
 
 ## 遊戲流程
 
 - scene 狀態機：loading → title → battle → reward 或 rest → 下一個 battle ... → result。
 - battle 內部狀態：BATTLE_START → PLAYER_TURN → ENEMY_TURN → BATTLE_END。每次狀態轉換都要呼叫 `check_result`。
-- 每場戰鬥結束後，從獎勵池中用 `random.sample` 抽三張卡，可選一張或跳過。休息點回復 30% 最大血量。
+- 每場戰鬥結束後，從獎勵池中用 `random.sample` 抽三張卡，可選一張或跳過。獎勵畫面沿用手牌的卡牌樣式。休息點回復 30% 最大血量。
 - 玩家狀態（血量與牌組）由 run.py 在戰鬥之間保存，每場戰鬥開始時重建抽牌堆。
 - 同一種 tier 有多個敵人時隨機選擇。
 
@@ -239,14 +382,16 @@ rules.py 不處理任何檔案讀取。第一版必須支援 damage、block 和 
 
 每個階段都要能執行，並附上 pytest 測試，完成後再進入下一階段。
 
-1. **grid、draw、終端機渲染器**
-   驗收：中英文混排的框線能在終端機中對齊；`text_width` 有測試。
+1. **grid、draw、終端機渲染器**（已完成）
+1b. **套用版面規格**
+   內容：palette.py、layout.py 座標常數、`wrap_text`、cardtext.py、雙線框線與卡牌繪製、`Inspect` 動作、終端機尺寸檢查。
+   驗收：`wrap_text` 與 cardtext 的測試通過（包含行首標點與佔位符錯誤）；`tools/demo_layout.py` 用假資料畫出與「畫面版面」參考圖相同結構的完整戰鬥畫面，至少包含 5 張不同描述長度的卡牌與一張能量不足的卡牌。
 2. **mod loader 與 report**
-   驗收：core 能正常載入；測試要涵蓋欄位錯誤、重複 id、缺少依賴、循環依賴、覆寫、非法 ASCII 字元和圖檔過大，並確認中文報告內容。
+   驗收：core 能正常載入；測試要涵蓋欄位錯誤、重複 id、缺少依賴、循環依賴、覆寫、非法 ASCII 字元、圖檔過大、卡名太長、描述超過 6 行、佔位符錯誤，並確認中文報告內容，不能只驗證有沒有報錯。
 3. **bridge 與 battle scene（終端機）**
    驗收：`python main.py --terminal` 可以完整打完一場戰鬥；故意讓 rules.py 拋出例外或回傳錯誤型別時，遊戲不會崩潰，並顯示正確的錯誤訊息。
 4. **pygame 渲染器**
-   驗收：與終端機版顯示相同內容，中文使用附帶字型正常顯示，滑鼠可以點擊卡牌。
+   驗收：與終端機版顯示相同內容，中文使用附帶字型正常顯示，滑鼠可以點擊卡牌，滑鼠停留會顯示卡牌詳細資訊。
 5. **run、reward、rest、result、title、loading**
    驗收：可以完整跑完 run.json 定義的一局遊戲。
 6. **fx 與熱重載**
@@ -256,15 +401,34 @@ rules.py 不處理任何檔案讀取。第一版必須支援 damage、block 和 
 
 ## 內容資料
 
-core 的初始內容：
-- 初始牌組：斬擊×5、防禦×4、重擊×1
-- 獎勵池：盾擊、包紮、鐵壁、處決、連斬、洞察、蓄力、背水
-- 敵人：
-  - normal：史萊姆、哥布林
-  - elite：骷髏騎士
-  - boss：守門巨像
+### 卡牌（mods/core/cards.json）
 
-`run.json` 內容：
+描述欄位全部省略，使用自動產生。`count` 為放入初始牌組的張數；初始牌的 `in_reward_pool` 為 false。
+
+| id | 名稱 | 類型 | 費用 | 效果欄位 | count | in_reward_pool |
+|---|---|---|---|---|---|---|
+| strike | 斬擊 | attack | 1 | damage 6 | 5 | false |
+| defend | 防禦 | skill | 1 | block 5 | 4 | false |
+| bash | 重擊 | attack | 2 | damage 12 | 1 | false |
+| shield_bash | 盾擊 | attack | 1 | damage 5, block 5 | 0 | true |
+| bandage | 包紮 | skill | 1 | heal 6 | 0 | true |
+| iron_wall | 鐵壁 | skill | 2 | block 12 | 0 | true |
+| execute | 處決 | attack | 3 | damage 24 | 0 | true |
+| flurry | 連斬 | attack | 1 | damage 3, hits 3 | 0 | true |
+| insight | 洞察 | skill | 0 | draw 2 | 0 | true |
+| charge | 蓄力 | skill | 0 | energy 2 | 0 | true |
+| last_stand | 背水 | attack | 1 | damage 10, self_damage 3 | 0 | true |
+
+### 敵人（mods/core/enemies.json）
+
+| id | 名稱 | tier | HP | 顏色 | 行動循環 |
+|---|---|---|---|---|---|
+| slime | 史萊姆 | normal | 25 | cyan | 攻擊 5 → 攻擊 5 → 防禦 5 |
+| goblin | 哥布林 | normal | 35 | green | 攻擊 8 → 攻擊 5 → 防禦 6 |
+| skeleton_knight | 骷髏騎士 | elite | 55 | white | 防禦 10 → 攻擊 16 |
+| gate_colossus | 守門巨像 | boss | 120 | yellow | 防禦 15 → 攻擊 6 → 攻擊 6 → 攻擊 25 |
+
+### 關卡（mods/core/run.json）
 
 ```json
 [
@@ -276,7 +440,7 @@ core 的初始內容：
 ]
 ```
 
-數值請參考 `mods/core/cards.json` 和 `mods/core/enemies.json`。ASCII 圖必須是原創圖案，不要複製網路上的現成作品。
+ASCII 圖必須是原創圖案，不要複製網路上的現成作品。
 
 ## 不在範圍內
 
