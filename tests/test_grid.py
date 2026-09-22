@@ -34,9 +34,28 @@ def test_clear_resets_cells_and_sets_dirty():
     grid.clear()
     cell = grid.get(0, 0)
     assert cell.char == " "
-    assert cell.fg == "white"
+    assert cell.fg == "text"
     assert cell.bg is None
     assert grid.dirty is True
+
+
+def test_overwriting_wide_char_head_clears_tail():
+    grid = Grid(width=5, height=1)
+    grid.set_cell(0, 0, "哈", wide_tail=False)
+    grid.set_cell(1, 0, "", wide_tail=True)
+    grid.set_cell(0, 0, "a")  # 覆寫前半格
+    assert grid.get(0, 0).char == "a"
+    assert grid.get(1, 0).char == " "
+    assert grid.get(1, 0).wide_tail is False
+
+
+def test_overwriting_wide_char_tail_clears_head():
+    grid = Grid(width=5, height=1)
+    grid.set_cell(0, 0, "哈", wide_tail=False)
+    grid.set_cell(1, 0, "", wide_tail=True)
+    grid.set_cell(1, 0, "b")  # 覆寫後半格
+    assert grid.get(1, 0).char == "b"
+    assert grid.get(0, 0).char == " "
 
 
 def test_plain_lines_skips_wide_tail_cells():

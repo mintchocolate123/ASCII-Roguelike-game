@@ -40,4 +40,9 @@ class Quit:
     pass
 
 
-Action = Union[PlayCard, EndTurn, Choose, Confirm, Back, Reload, Quit]
+@dataclass(frozen=True)
+class Inspect:
+    index: int | None  # None 表示結束檢視
+
+
+Action = Union[PlayCard, EndTurn, Choose, Confirm, Back, Reload, Quit, Inspect]

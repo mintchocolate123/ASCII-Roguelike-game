@@ -41,10 +41,17 @@ def test_draw_text_returns_next_x():
     assert end_x == 3  # 哈 佔 2 格 + i 佔 1 格
 
 
-def test_draw_text_clips_at_edge_without_raising():
+def test_draw_text_wide_char_not_drawn_when_only_one_column_left():
+    """寬字元只剩一格空間時整個字不畫，不拋出例外。"""
     grid = Grid(width=3, height=1)
-    draw_text(grid, 2, 0, "哈")  # 寬字元尾格會超出邊界
-    assert grid.get(2, 0).char == "哈"
+    draw_text(grid, 2, 0, "哈")
+    assert grid.get(2, 0).char == " "
+
+
+def test_draw_text_ascii_at_edge_is_clipped_without_raising():
+    grid = Grid(width=3, height=1)
+    draw_text(grid, 2, 0, "ab")
+    assert grid.get(2, 0).char == "a"
 
 
 def test_draw_box_corners_and_edges():

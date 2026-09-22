@@ -1,35 +1,19 @@
 """終端機渲染器：ANSI 色碼整頁輸出，poll_actions() 以 input() 阻塞讀取。"""
 from __future__ import annotations
 
+import shutil
 import sys
 
-from ..actions import Action, Back, Confirm, EndTurn, PlayCard, Quit, Reload
+from .. import palette
+from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard, Quit, Reload
 from ..grid import Grid
 from .base import Renderer
 
 ANSI_RESET = "\x1b[0m"
 CLEAR_SCREEN = "\x1b[2J\x1b[H"
 
-ANSI_FG = {
-    "white": "37",
-    "red": "31",
-    "green": "32",
-    "cyan": "36",
-    "yellow": "33",
-    "blue": "34",
-    "gray": "90",
-    "black": "30",
-}
-ANSI_BG = {
-    "white": "47",
-    "red": "41",
-    "green": "42",
-    "cyan": "46",
-    "yellow": "43",
-    "blue": "44",
-    "gray": "100",
-    "black": "40",
-}
+MIN_TERMINAL_WIDTH = 96
+MIN_TERMINAL_HEIGHT = 33  # 32 格畫面 + 至少 1 行輸入提示
 
 
 def _ensure_utf8_stdout() -> None:
@@ -55,13 +39,27 @@ def parse_action(line: str) -> Action | None:
         return Reload()
     if cmd == "q":
         return Quit()
+    if cmd.startswith("?"):
+        rest = cmd[1:]
+        if rest == "":
+            return Inspect(None)
+        if rest.isdigit():
+            return Inspect(int(rest) - 1)
+        return None
     return None
 
 
 class TerminalRenderer(Renderer):
-    def __init__(self, out=None) -> None:
+    def __init__(self, out=None, terminal_size: tuple[int, int] | None = None) -> None:
         _ensure_utf8_stdout()
         self._out = out if out is not None else sys.stdout
+        self._terminal_size = terminal_size
+
+    def _get_terminal_size(self) -> tuple[int, int]:
+        if self._terminal_size is not None:
+            return self._terminal_size
+        size = shutil.get_terminal_size(fallback=(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT))
+        return size.columns, size.lines
 
     def render_to_string(self, grid: Grid) -> str:
         """把 grid 轉成含 ANSI 色碼的整頁字串，供 present() 輸出，也方便測試。"""
@@ -75,10 +73,10 @@ class TerminalRenderer(Renderer):
                 if cell.wide_tail:
                     continue
                 if cell.fg != current_fg or cell.bg != current_bg:
-                    codes = [ANSI_FG.get(cell.fg, ANSI_FG["white"])]
+                    seq = ANSI_RESET + f"\x1b[38;5;{palette.ansi256(cell.fg)}m"
                     if cell.bg:
-                        codes.append(ANSI_BG.get(cell.bg, ANSI_BG["black"]))
-                    parts.append(ANSI_RESET + f"\x1b[{';'.join(codes)}m")
+                        seq += f"\x1b[48;5;{palette.ansi256(cell.bg)}m"
+                    parts.append(seq)
                     current_fg = cell.fg
                     current_bg = cell.bg
                 parts.append(cell.char if cell.char else " ")
@@ -88,6 +86,17 @@ class TerminalRenderer(Renderer):
 
     def present(self, grid: Grid) -> None:
         if not grid.dirty:
+            return
+        cols, lines = self._get_terminal_size()
+        if cols < MIN_TERMINAL_WIDTH or lines < MIN_TERMINAL_HEIGHT:
+            self._out.write(CLEAR_SCREEN)
+            self._out.write(
+                f"視窗太小，請放大終端機視窗到至少 {MIN_TERMINAL_WIDTH} 欄 x "
+                f"{MIN_TERMINAL_HEIGHT} 列後再繼續。\n"
+                f"目前視窗大小：{cols} 欄 x {lines} 列。\n"
+            )
+            self._out.flush()
+            grid.dirty = False
             return
         self._out.write(CLEAR_SCREEN)
         self._out.write(self.render_to_string(grid))
