@@ -7,6 +7,9 @@ result 可以重新開始（回到 title）或離開。
 
 F5（Reload）在戰鬥畫面隨時可以按：重新載入所有 mod 資料與 rules.py，重開目前這場戰鬥，
 不保留舊的戰鬥狀態。重新載入失敗時只顯示錯誤，繼續用重新載入前那個還能動的版本玩下去。
+
+--no-fx 完全關閉動畫效果（傷害數字、延遲血條、閃爍抖動），方便上課示範時按 F5 後立刻看到
+改動結果，不用等動畫播完。終端機版本來就不會播放動畫，這個參數對它沒有影響。
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ASCII 卡牌遊戲")
     parser.add_argument("--terminal", action="store_true", help="使用終端機渲染器（預設使用 pygame 視窗）")
     parser.add_argument("--enemy", default=None, help="開發測試用：指定敵人完整 id，直接開始單場戰鬥")
+    parser.add_argument("--no-fx", action="store_true", help="完全關閉動畫效果，方便上課示範時立刻看到結果")
     return parser.parse_args(argv)
 
 
@@ -265,7 +269,7 @@ class GameController:
         self.scene = new_scene
 
 
-def run_game(use_terminal: bool) -> int:
+def run_game(use_terminal: bool, no_fx: bool = False) -> int:
     db, report = load_mods(MODS_DIR)
     print(report.format_text())
     print()
@@ -275,7 +279,10 @@ def run_game(use_terminal: bool) -> int:
         return 1
 
     controller = GameController(
-        db, report, supports_animation=renderer.supports_animation(), supports_mouse=renderer.supports_mouse()
+        db,
+        report,
+        supports_animation=renderer.supports_animation() and not no_fx,
+        supports_mouse=renderer.supports_mouse(),
     )
 
     grid = Grid()
@@ -305,7 +312,7 @@ def run_game(use_terminal: bool) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
+def run_dev_battle(use_terminal: bool, enemy_full_id: str, no_fx: bool = False) -> int:
     db, report = load_mods(MODS_DIR)
     print(report.format_text())
     print()
@@ -319,6 +326,7 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
     renderer = _create_renderer(use_terminal)
     if renderer is None:
         return 1
+    supports_animation = renderer.supports_animation() and not no_fx
 
     bridge = Bridge(RULES_PATH)
     try:
@@ -328,7 +336,7 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
             db,
             deck,
             enemy_full_id=enemy_full_id,
-            supports_animation=renderer.supports_animation(),
+            supports_animation=supports_animation,
             supports_mouse=renderer.supports_mouse(),
         )
     except ModCallError as exc:
@@ -367,7 +375,7 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
                     new_deck = build_starting_deck(db.cards)
                     scene = _build_battle(
                         bridge, db, new_deck, enemy_full_id=enemy_full_id,
-                        supports_animation=renderer.supports_animation(),
+                        supports_animation=supports_animation,
                         supports_mouse=renderer.supports_mouse(),
                     )
                     scene.battle_log.append("已重新載入 mod 資料與 rules.py，戰鬥重新開始。")
@@ -396,8 +404,8 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.enemy:
-        return run_dev_battle(args.terminal, args.enemy)
-    return run_game(args.terminal)
+        return run_dev_battle(args.terminal, args.enemy, no_fx=args.no_fx)
+    return run_game(args.terminal, no_fx=args.no_fx)
 
 
 if __name__ == "__main__":

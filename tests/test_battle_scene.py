@@ -504,3 +504,124 @@ def test_hint_row_shown_when_not_supports_mouse():
     grid = Grid()
     scene.draw(grid)
     assert "出牌" in plain_lines(grid)[layout.HINT_ROW]
+
+
+# ---------------------------------------------------------------------------
+# 傷害數字彈出：扣血用 hp 色，被護盾吸收的量用 block 色
+# ---------------------------------------------------------------------------
+
+
+def test_playing_damage_card_spawns_hp_colored_number_on_enemy():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    numbers = scene.fx.numbers_for("enemy")
+    assert len(numbers) == 1
+    assert numbers[0].amount == 6
+    assert numbers[0].color == "hp"
+
+
+def test_enemy_attack_absorbed_by_block_spawns_block_colored_number():
+    scene = BattleScene(
+        _bridge(), _player([]), _enemy(hp=99, actions=[{"type": "attack", "value": 5}]), supports_animation=True
+    )
+    scene.player["block"] = 5  # 建立 scene 時 start_turn 已經把 block 重置過，要在這裡才設得上
+    scene.handle([EndTurn()])
+    numbers = scene.fx.numbers_for("player")
+    assert len(numbers) == 1
+    assert numbers[0].amount == 5
+    assert numbers[0].color == "block"
+    assert scene.player["hp"] == 50  # 完全被護盾吸收，沒有扣血
+
+
+def test_enemy_attack_partially_absorbed_spawns_both_numbers():
+    scene = BattleScene(
+        _bridge(), _player([]), _enemy(hp=99, actions=[{"type": "attack", "value": 8}]), supports_animation=True
+    )
+    scene.player["block"] = 3
+    scene.handle([EndTurn()])
+    numbers = {(n.amount, n.color) for n in scene.fx.numbers_for("player")}
+    assert numbers == {(5, "hp"), (3, "block")}
+
+
+def test_draw_shows_damage_number_near_enemy_hp_row():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    assert any("-6" in line for line in lines)
+
+
+def test_terminal_mode_never_spawns_damage_numbers():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=False)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.numbers_for("enemy") == []
+
+
+# ---------------------------------------------------------------------------
+# 延遲血條：血條先快速掉到新值，殘影慢慢追上
+# ---------------------------------------------------------------------------
+
+
+def test_playing_damage_card_starts_hp_lag_on_enemy():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=20), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.enemy["hp"] == 14
+    assert scene.fx.hp_lag_value("enemy") == 20  # 殘影還停在舊值，血條本身已經是新值
+
+
+def test_draw_hp_bar_ghost_segment_visible_right_after_hit():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=20), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    grid = Grid()
+    scene.draw(grid)
+    hp_x = layout.LEFT_CONTENT_START + 15 + 3
+    row = [grid.get(hp_x + i, layout.ENEMY_HP_ROW) for i in range(20)]
+    assert any(cell.fg == "dim" for cell in row)  # 殘影用 dim 色
+
+
+def test_heal_does_not_start_hp_lag():
+    card = _card(heal=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card], hp=30), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.hp_lag_value("player") is None
+
+
+# ---------------------------------------------------------------------------
+# 動畫可跳過：播放期間任何輸入都立刻快轉到結果狀態（不是取消）
+# ---------------------------------------------------------------------------
+
+
+def test_any_input_during_fx_skips_to_end_immediately():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+
+    scene.handle([PlayCard(0)])  # 播放中按任意鍵：快轉，不是真的出牌
+    assert scene.fx.is_playing is False
+    assert scene.enemy["hp"] == 93  # 只扣了第一次的傷害，這次輸入沒有被當成出牌
+
+
+def test_skip_via_click_also_works():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+    scene.handle([ClickCard(None)])
+    assert scene.fx.is_playing is False
+
+
+def test_next_input_after_skip_is_treated_as_a_normal_action():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])  # 出第一張牌，觸發效果
+    scene.handle([PlayCard(0)])  # 快轉
+    assert scene.fx.is_playing is False
+    scene.handle([PlayCard(0)])  # 這次是正常輸入，應該真的出牌
+    assert scene.enemy["hp"] == 87  # 93 - 6

@@ -99,3 +99,29 @@ def test_draw_hp_bar_half():
     chars = [grid.get(i, 0).char for i in range(10)]
     assert chars.count("█") == 5
     assert chars.count("░") == 5
+
+
+def test_draw_hp_bar_with_lag_draws_ghost_segment_between_current_and_lag():
+    grid = Grid(width=10, height=1)
+    # current=3（血條本身），lag=7（還沒追上的舊血量）：0-2 是 hp 色、3-6 是殘影（dim）、7-9 空
+    draw_hp_bar(grid, 0, 0, 10, 3, 10, lag_current=7)
+    cells = [grid.get(i, 0) for i in range(10)]
+    assert [c.fg for c in cells[0:3]] == ["hp"] * 3
+    assert [c.char for c in cells[0:3]] == ["█"] * 3
+    assert [c.fg for c in cells[3:7]] == ["dim"] * 4
+    assert [c.char for c in cells[3:7]] == ["█"] * 4
+    assert [c.char for c in cells[7:10]] == ["░"] * 3
+
+
+def test_draw_hp_bar_lag_at_or_below_current_draws_no_ghost():
+    grid = Grid(width=10, height=1)
+    draw_hp_bar(grid, 0, 0, 10, 5, 10, lag_current=5)
+    cells = [grid.get(i, 0) for i in range(10)]
+    assert all(c.fg != "dim" for c in cells)
+
+
+def test_draw_hp_bar_without_lag_is_unchanged():
+    grid = Grid(width=10, height=1)
+    draw_hp_bar(grid, 0, 0, 10, 5, 10, lag_current=None)
+    cells = [grid.get(i, 0) for i in range(10)]
+    assert all(c.fg != "dim" for c in cells)

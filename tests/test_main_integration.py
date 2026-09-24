@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from main import parse_args
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -59,6 +61,34 @@ def test_reload_mid_battle_via_dev_flow_does_not_crash():
     assert "Traceback (most recent call last)" not in result.stderr
     assert result.returncode == 0
     assert "已重新載入" in result.stdout
+    assert ("恭喜獲勝" in result.stdout) or ("你被擊敗了" in result.stdout)
+
+
+def test_parse_args_no_fx_defaults_to_false():
+    args = parse_args(["--terminal"])
+    assert args.no_fx is False
+
+
+def test_parse_args_no_fx_flag_sets_true():
+    args = parse_args(["--terminal", "--no-fx"])
+    assert args.no_fx is True
+
+
+def test_no_fx_flag_does_not_break_terminal_battle():
+    # 終端機版本來就不會播放動畫，--no-fx 對它沒有影響，這裡只確認參數能正常帶入、不會讓遊戲崩潰。
+    keys = "\n" + "1\ne\n" * 20
+    env = {**os.environ, "COLUMNS": "96", "LINES": "40"}
+    result = subprocess.run(
+        [sys.executable, "main.py", "--terminal", "--no-fx", "--enemy", "core:slime"],
+        cwd=REPO_ROOT,
+        input=keys,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert "Traceback (most recent call last)" not in result.stderr
+    assert result.returncode == 0
     assert ("恭喜獲勝" in result.stdout) or ("你被擊敗了" in result.stdout)
 
 

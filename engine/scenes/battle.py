@@ -24,7 +24,15 @@ from ..draw import (
     text_width,
     wrap_text,
 )
-from ..fx import ENEMY_BLOCK_GAIN, ENEMY_HIT, PLAYER_BLOCK_GAIN, PLAYER_HIT, FxQueue, diff_triggers
+from ..fx import (
+    ENEMY_BLOCK_GAIN,
+    ENEMY_HIT,
+    PLAYER_BLOCK_GAIN,
+    PLAYER_HIT,
+    FxQueue,
+    diff_damage_numbers,
+    diff_triggers,
+)
 from ..grid import Grid
 from .scene import Scene
 
@@ -151,13 +159,21 @@ class BattleScene(Scene):
         self._enter_player_turn()
 
     def _trigger_fx(self, before_player: dict, before_enemy: dict) -> None:
-        """比較呼叫前後的 view，自動排入對應的效果。終端機版（supports_animation=False）直接略過。"""
+        """比較呼叫前後的 view，自動排入對應的效果。終端機版／--no-fx（supports_animation=False）
+        直接略過，不會排入任何效果。"""
         if not self.supports_animation:
             return
         after_player = self.bridge.player_view(self.player)
         after_enemy = self.bridge.enemy_view(self.enemy)
+
         for kind in diff_triggers(before_player, after_player, before_enemy, after_enemy):
             self.fx.trigger(kind)
+
+        for origin, amount, color in diff_damage_numbers(before_player, after_player, before_enemy, after_enemy):
+            self.fx.spawn_number(amount, color, origin)
+
+        for origin, before, after in (("player", before_player, after_player), ("enemy", before_enemy, after_enemy)):
+            self.fx.start_hp_lag(origin, before.get("hp", 0), after.get("hp", 0))
 
     def _fatal(self, error: ModCallError) -> None:
         """battle 流程本身出錯：顯示錯誤面板，玩家確認後結束整場戰鬥（回到標題等級的安全狀態）。"""
@@ -187,7 +203,10 @@ class BattleScene(Scene):
             self.reload_requested = True
             return
         if self.fx.is_playing:
-            return  # 效果播放期間不接受輸入
+            # 效果播放期間不接受輸入，但任何輸入都會讓效果立刻快轉到結果狀態
+            # （不是取消，下一個輸入才會被當成正常的遊戲操作處理）。
+            self.fx.skip()
+            return
         if self.state == STATE_SHOWING_ERROR:
             if isinstance(action, (Confirm, Back)):
                 self._dismiss_error()
@@ -347,11 +366,13 @@ class BattleScene(Scene):
         block = enemy_view.get("block", 0)
         hp_x = layout.LEFT_CONTENT_START + 15
         draw_text(grid, hp_x, layout.ENEMY_HP_ROW, "HP ", fg="text")
-        draw_hp_bar(grid, hp_x + 3, layout.ENEMY_HP_ROW, 20, hp, max_hp)
+        draw_hp_bar(grid, hp_x + 3, layout.ENEMY_HP_ROW, 20, hp, max_hp, lag_current=self.fx.hp_lag_value("enemy"))
         draw_text(grid, hp_x + 24, layout.ENEMY_HP_ROW, f"{hp}/{max_hp}", fg="text")
         if block > 0:
             block_color = "highlight" if self.fx.flash_on(ENEMY_BLOCK_GAIN) else "block"
             draw_text(grid, hp_x + 35, layout.ENEMY_HP_ROW, f"盾 {block}", fg=block_color)
+
+        self._draw_damage_numbers(grid, "enemy", layout.ENEMY_DAMAGE_NUMBER_X, layout.ENEMY_DAMAGE_NUMBER_Y)
 
         if self.current_intent is not None:
             intent = self._format_intent(self.current_intent)
@@ -365,6 +386,11 @@ class BattleScene(Scene):
         if intent.get("type") == "attack":
             return f">> 準備攻擊 {value} <<"
         return f">> 準備防禦 {value} <<"
+
+    def _draw_damage_numbers(self, grid: Grid, origin: str, x: int, y: int) -> None:
+        """畫出從 (x, y) 往上飄的傷害數字：扣血用 hp 色，被護盾吸收的量用 block 色。"""
+        for i, number in enumerate(self.fx.numbers_for(origin)):
+            draw_text(grid, x + i * 5, y + number.row_offset, f"-{number.amount}", fg=number.display_color)
 
     # -- 右面板：戰鬥紀錄 / 卡牌詳細資訊 ------------------------------------
 
@@ -416,12 +442,14 @@ class BattleScene(Scene):
         x = draw_text(
             grid, x, layout.PLAYER_STATUS_ROW, f"[ {player_view.get('name', '冒險者')} ]  HP ", fg=text_color
         )
-        draw_hp_bar(grid, x, layout.PLAYER_STATUS_ROW, 20, hp, max_hp)
+        draw_hp_bar(grid, x, layout.PLAYER_STATUS_ROW, 20, hp, max_hp, lag_current=self.fx.hp_lag_value("player"))
         x = draw_text(grid, x + 21, layout.PLAYER_STATUS_ROW, f"{hp}/{max_hp}", fg=text_color)
         x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"盾 {block}", fg=block_color)
         x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, "能量 ", fg=text_color)
         x = draw_energy_pips(grid, x, layout.PLAYER_STATUS_ROW, energy, max_energy)
         draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"牌堆 {draw_pile} / 棄牌 {discard}", fg=text_color)
+
+        self._draw_damage_numbers(grid, "player", layout.PLAYER_DAMAGE_NUMBER_X, layout.PLAYER_DAMAGE_NUMBER_Y)
 
     # -- 手牌 -------------------------------------------------------------
 

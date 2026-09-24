@@ -253,14 +253,27 @@ def draw_hp_bar(
     fg: str = "hp",
     empty_fg: str = "hp_empty",
     bg: str | None = None,
+    lag_current: int | None = None,
+    lag_fg: str = "dim",
 ) -> None:
-    """畫血條，依 current/maximum 比例決定填滿格數。"""
+    """畫血條，依 current/maximum 比例決定填滿格數。
+
+    lag_current（延遲血條用）：如果有給，且大於 current，會在 current 跟 lag_current 之間
+    多畫一段 lag_fg 色的殘影——血條本身已經立刻顯示新的 current，殘影則是還沒追上的舊血量，
+    讓玩家看清楚這次扣了多少。
+    """
     maximum = max(maximum, 1)
     current = max(0, min(current, maximum))
     filled = round(width * current / maximum)
+    lag_filled = filled
+    if lag_current is not None:
+        lag_current = max(0, min(lag_current, maximum))
+        lag_filled = max(filled, round(width * lag_current / maximum))
     for i in range(width):
         if i < filled:
             grid.set_cell(x + i, y, BLOCK_FULL, fg, bg)
+        elif i < lag_filled:
+            grid.set_cell(x + i, y, BLOCK_FULL, lag_fg, bg)
         else:
             grid.set_cell(x + i, y, BLOCK_EMPTY, empty_fg, bg)
 

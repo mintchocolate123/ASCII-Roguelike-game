@@ -19,7 +19,7 @@
 
 ```
 （repo 根目錄）
-├── main.py                     啟動點：解析參數（--terminal）、載入 mod、進入主迴圈
+├── main.py                     啟動點：解析參數（--terminal、--no-fx）、載入 mod、進入主迴圈
 ├── engine/
 │   ├── grid.py                 字元格緩衝區
 │   ├── draw.py                 繪圖函式（文字、換行、框線、血條、ASCII 圖、卡牌）
@@ -452,7 +452,11 @@ rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引�
 - 敵人 HP 下降：敵人圖閃紅並左右抖動 1 格
 - 玩家 HP 下降：玩家狀態列閃紅
 - 護盾增加：護盾數字閃藍色
-效果播放期間 battle scene 不接受輸入。終端機版直接略過效果。
+- 傷害數字彈出：從受擊位置（`engine/layout.py` 的 `ENEMY_DAMAGE_NUMBER_X/Y`、`PLAYER_DAMAGE_NUMBER_X/Y`）往上飄，扣血的數字用 hp 色，被護盾吸收的量用 block 色；飄動與淡出的時間、上升格數由 `engine/fx.py` 的 `DAMAGE_NUMBER_DURATION`、`DAMAGE_NUMBER_RISE`、`DAMAGE_NUMBER_FADE_AT` 控制，淡出以切換成 dim 色近似（字元格無法做透明漸層）。同一個目標同時出現多個數字時，往右依序錯開排列。
+- 延遲血條：`draw_hp_bar` 支援 `lag_current` 參數，血條本身先跳到新值，殘影（dim 色）留在原本的位置慢慢追上，追上所花的時間是 `engine/fx.py` 的 `HP_LAG_DURATION`。
+- 效果播放期間 battle scene 不接受輸入，但任何輸入（點擊或按鍵）都會讓當前效果立刻結束、直接跳到結果狀態（快轉，不是取消該次輸入）；下一次輸入才會被當成正常的遊戲操作處理。
+- 終端機版本來就不會排入任何效果（`FxQueue` 保持空），也不受這四項動畫影響，畫面完全不變。
+- `python main.py --no-fx` 可以完全關閉動畫效果（閃爍、抖動、傷害數字、延遲血條），方便上課示範時按 F5 後立刻看到改動結果，不用等動畫播完；這個參數只影響 pygame 版，對終端機版沒有作用。
 
 ## 實作階段與驗收條件
 
