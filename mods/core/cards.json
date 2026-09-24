@@ -1,5 +1,5 @@
 [
-    {"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6, "count": 5, "in_reward_pool": false},
+    {"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 99, "count": 5, "in_reward_pool": false},
     {"id": "defend", "name": "防禦", "type": "skill", "cost": 1, "block": 5, "count": 4, "in_reward_pool": false},
     {"id": "bash", "name": "重擊", "type": "attack", "cost": 2, "damage": 12, "count": 1, "in_reward_pool": false},
     {"id": "shield_bash", "name": "盾擊", "type": "attack", "cost": 1, "damage": 5, "block": 5, "count": 0, "in_reward_pool": true},

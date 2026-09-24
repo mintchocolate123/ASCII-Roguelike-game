@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.bridge import Bridge, ModCallError
+from engine.bridge import Bridge, ModCallError, RulesReloadError
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -225,3 +225,44 @@ def test_reload_picks_up_file_changes(tmp_path):
     rules_file.write_text("def can_play(player, hand_index):\n    return False\n", encoding="utf-8")
     bridge.reload()
     assert bridge.can_play({}, 0) is False
+
+
+def test_reload_with_syntax_error_raises_and_keeps_old_rules(tmp_path):
+    rules_file = tmp_path / "rules.py"
+    rules_file.write_text("def can_play(player, hand_index):\n    return True\n", encoding="utf-8")
+    bridge = Bridge(rules_file)
+    assert bridge.can_play({}, 0) is True
+
+    rules_file.write_text("def can_play(player, hand_index):\n    return (((\n", encoding="utf-8")
+    with pytest.raises(RulesReloadError):
+        bridge.reload()
+
+    # 重載失敗，繼續用重載前那個還能正常運作的版本
+    assert bridge.can_play({}, 0) is True
+
+
+def test_reload_with_import_error_raises_and_keeps_old_rules(tmp_path):
+    rules_file = tmp_path / "rules.py"
+    rules_file.write_text("def can_play(player, hand_index):\n    return True\n", encoding="utf-8")
+    bridge = Bridge(rules_file)
+
+    rules_file.write_text("import this_module_does_not_exist\n", encoding="utf-8")
+    with pytest.raises(RulesReloadError) as exc_info:
+        bridge.reload()
+    assert "重新載入 rules.py 失敗" in str(exc_info.value)
+    assert bridge.can_play({}, 0) is True
+
+
+def test_reload_failure_message_does_not_crash_process(tmp_path):
+    """引擎不能因為熱重載失敗而崩潰：例外要能被攔截，不會是未處理的例外。"""
+    rules_file = tmp_path / "rules.py"
+    rules_file.write_text("def can_play(player, hand_index):\n    return True\n", encoding="utf-8")
+    bridge = Bridge(rules_file)
+    rules_file.write_text("raise RuntimeError('壞掉了')\n", encoding="utf-8")
+    try:
+        bridge.reload()
+    except RulesReloadError:
+        pass
+    else:
+        pytest.fail("應該要拋出 RulesReloadError")
+    assert bridge.can_play({}, 0) is True

@@ -48,6 +48,17 @@ def test_unknown_enemy_full_id_fails_gracefully():
     assert "無法開始戰鬥" in result.stdout
 
 
+def test_reload_mid_battle_via_dev_flow_does_not_crash():
+    """驗收條件：F5（終端機版對應 r）重新載入所有 mod 資料與 rules.py，重開目前這場戰鬥，不能讓遊戲崩潰。"""
+    # 開場 Enter，打一張牌，按 r 觸發重新載入，接著照常打完剩下的戰鬥
+    keys = "\n1\ne\nr\n" + "1\ne\n" * 20
+    result = _run_battle("core:slime", keys)
+    assert "Traceback (most recent call last)" not in result.stderr
+    assert result.returncode == 0
+    assert "已重新載入" in result.stdout
+    assert ("恭喜獲勝" in result.stdout) or ("你被擊敗了" in result.stdout)
+
+
 def test_default_flow_no_enemy_flag_reaches_first_battle_via_loading_and_title():
     """驗收條件：main.py 改成從 loading 進入。不帶 --enemy 時走 loading -> title -> 第一關戰鬥。"""
     env = {**os.environ, "COLUMNS": "96", "LINES": "40"}

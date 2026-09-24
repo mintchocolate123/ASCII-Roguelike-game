@@ -26,7 +26,8 @@ def _controller(stages=None):
     }
     if stages is not None:
         db.run_stages = stages
-    controller = GameController(db, report)
+    # supports_animation=False：這裡在測 controller 的狀態轉換邏輯，不想被 fx 播放時間卡住輸入。
+    controller = GameController(db, report, supports_animation=False)
     controller.handle([Confirm()])  # loading -> title
     controller.handle([Confirm()])  # title -> 第一關
     return controller

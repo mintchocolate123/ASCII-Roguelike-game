@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from .. import layout
-from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard
+from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard, Reload
 from ..bridge import Bridge, ModCallError
 from ..draw import (
     TYPE_LABELS,
@@ -23,6 +23,7 @@ from ..draw import (
     text_width,
     wrap_text,
 )
+from ..fx import ENEMY_BLOCK_GAIN, ENEMY_HIT, PLAYER_BLOCK_GAIN, PLAYER_HIT, FxQueue, diff_triggers
 from ..grid import Grid
 from .scene import Scene
 
@@ -36,12 +37,13 @@ ERROR_PANEL_WIDTH = 90
 
 
 class BattleScene(Scene):
-    def __init__(self, bridge: Bridge, player, enemy, *, floor: int = 1) -> None:
+    def __init__(self, bridge: Bridge, player, enemy, *, floor: int = 1, supports_animation: bool = True) -> None:
         self.bridge = bridge
         self.player = player
         self.enemy = enemy
         self.floor = floor
         self.turn = 1
+        self.supports_animation = supports_animation
 
         self.battle_log: list[str] = []
         self.inspect_index: int | None = None
@@ -52,6 +54,9 @@ class BattleScene(Scene):
         self.error_recoverable = False
         self._resume_state: str | None = None
         self.finished = False
+
+        self.fx = FxQueue()
+        self.reload_requested = False
 
         self.state = STATE_BATTLE_START
         self._enter_battle_start()
@@ -118,16 +123,28 @@ class BattleScene(Scene):
             return
         if not self._call_hook("on_turn_end", self.player):
             return
+        before_player = dict(self.bridge.player_view(self.player))
+        before_enemy = dict(self.bridge.enemy_view(self.enemy))
         try:
             message = self.bridge.enemy_act(self.enemy, self.player)
         except ModCallError as exc:
             self._fatal(exc)
             return
         self._log(message)
+        self._trigger_fx(before_player, before_enemy)
         if self._check_and_maybe_end():
             return
         self.turn += 1
         self._enter_player_turn()
+
+    def _trigger_fx(self, before_player: dict, before_enemy: dict) -> None:
+        """比較呼叫前後的 view，自動排入對應的效果。終端機版（supports_animation=False）直接略過。"""
+        if not self.supports_animation:
+            return
+        after_player = self.bridge.player_view(self.player)
+        after_enemy = self.bridge.enemy_view(self.enemy)
+        for kind in diff_triggers(before_player, after_player, before_enemy, after_enemy):
+            self.fx.trigger(kind)
 
     def _fatal(self, error: ModCallError) -> None:
         """battle 流程本身出錯：顯示錯誤面板，玩家確認後結束整場戰鬥（回到標題等級的安全狀態）。"""
@@ -152,6 +169,12 @@ class BattleScene(Scene):
             self._handle_one(action)
 
     def _handle_one(self, action: Action) -> None:
+        if isinstance(action, Reload):
+            # F5 隨時都能按：出錯畫面卡住、效果播放中，都不應該擋住重新載入。
+            self.reload_requested = True
+            return
+        if self.fx.is_playing:
+            return  # 效果播放期間不接受輸入
         if self.state == STATE_SHOWING_ERROR:
             if isinstance(action, (Confirm, Back)):
                 self._dismiss_error()
@@ -200,6 +223,8 @@ class BattleScene(Scene):
         if not self._call_hook("before_play", self.player, self.enemy, index):
             return
 
+        before_player = dict(self.bridge.player_view(self.player))
+        before_enemy = dict(self.bridge.enemy_view(self.enemy))
         try:
             message = self.bridge.play_card(self.player, self.enemy, index)
         except ModCallError as exc:
@@ -207,6 +232,7 @@ class BattleScene(Scene):
             return
         self._log(message)
         self.inspect_index = None
+        self._trigger_fx(before_player, before_enemy)
 
         if not self._call_hook("after_play", self.player, self.enemy, index):
             return
@@ -217,7 +243,7 @@ class BattleScene(Scene):
     # ------------------------------------------------------------------
 
     def update(self, dt: float) -> None:
-        pass  # 終端機版沒有動畫，不需要處理
+        self.fx.update(dt)
 
     def draw(self, grid: Grid) -> None:
         if self.state == STATE_SHOWING_ERROR:
@@ -272,8 +298,9 @@ class BattleScene(Scene):
         art = enemy_view.get("art", [])
         art_width = max((text_width(line) for line in art), default=0)
         left_width = layout.LEFT_CONTENT_END - layout.LEFT_CONTENT_START + 1
-        art_x = layout.LEFT_CONTENT_START + max(0, (left_width - art_width) // 2)
-        draw_ascii_art(grid, art_x, layout.ENEMY_ART_TOP, art, fg=enemy_view.get("color", "white"))
+        art_x = layout.LEFT_CONTENT_START + max(0, (left_width - art_width) // 2) + self.fx.shake_offset()
+        art_color = "hp" if self.fx.flash_on(ENEMY_HIT) else enemy_view.get("color", "white")
+        draw_ascii_art(grid, art_x, layout.ENEMY_ART_TOP, art, fg=art_color)
 
         banner_width = 40
         banner_x = layout.LEFT_CONTENT_START + (left_width - banner_width) // 2
@@ -287,7 +314,8 @@ class BattleScene(Scene):
         draw_hp_bar(grid, hp_x + 3, layout.ENEMY_HP_ROW, 20, hp, max_hp)
         draw_text(grid, hp_x + 24, layout.ENEMY_HP_ROW, f"{hp}/{max_hp}", fg="text")
         if block > 0:
-            draw_text(grid, hp_x + 35, layout.ENEMY_HP_ROW, f"盾 {block}", fg="block")
+            block_color = "highlight" if self.fx.flash_on(ENEMY_BLOCK_GAIN) else "block"
+            draw_text(grid, hp_x + 35, layout.ENEMY_HP_ROW, f"盾 {block}", fg=block_color)
 
         if self.current_intent is not None:
             intent = self._format_intent(self.current_intent)
@@ -342,14 +370,20 @@ class BattleScene(Scene):
         draw_pile = len(player_view.get("draw_pile", []))
         discard = len(player_view.get("discard", []))
 
+        hit_flash = self.fx.flash_on(PLAYER_HIT)
+        text_color = "hp" if hit_flash else "text"
+        block_color = "hp" if hit_flash else ("highlight" if self.fx.flash_on(PLAYER_BLOCK_GAIN) else "block")
+
         x = layout.LEFT_CONTENT_START + 1
-        x = draw_text(grid, x, layout.PLAYER_STATUS_ROW, f"[ {player_view.get('name', '冒險者')} ]  HP ", fg="text")
+        x = draw_text(
+            grid, x, layout.PLAYER_STATUS_ROW, f"[ {player_view.get('name', '冒險者')} ]  HP ", fg=text_color
+        )
         draw_hp_bar(grid, x, layout.PLAYER_STATUS_ROW, 20, hp, max_hp)
-        x = draw_text(grid, x + 21, layout.PLAYER_STATUS_ROW, f"{hp}/{max_hp}", fg="text")
-        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"盾 {block}", fg="block")
-        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, "能量 ", fg="text")
+        x = draw_text(grid, x + 21, layout.PLAYER_STATUS_ROW, f"{hp}/{max_hp}", fg=text_color)
+        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"盾 {block}", fg=block_color)
+        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, "能量 ", fg=text_color)
         x = draw_energy_pips(grid, x, layout.PLAYER_STATUS_ROW, energy, max_energy)
-        draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"牌堆 {draw_pile} / 棄牌 {discard}", fg="text")
+        draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"牌堆 {draw_pile} / 棄牌 {discard}", fg=text_color)
 
     # -- 手牌 -------------------------------------------------------------
 

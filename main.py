@@ -4,6 +4,9 @@
 result 可以重新開始（回到 title）或離開。
 
 --enemy 保留給開發測試用：指定敵人完整 id 時跳過整個流程，直接打一場單場戰鬥。
+
+F5（Reload）在戰鬥畫面隨時可以按：重新載入所有 mod 資料與 rules.py，重開目前這場戰鬥，
+不保留舊的戰鬥狀態。重新載入失敗時只顯示錯誤，繼續用重新載入前那個還能動的版本玩下去。
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import time
 from pathlib import Path
 
 from engine.actions import Quit
-from engine.bridge import Bridge, ModCallError
+from engine.bridge import Bridge, ModCallError, RulesReloadError
 from engine.grid import Grid
 from engine.mod.loader import load_mods
 from engine.mod.report import LoadReport
@@ -55,6 +58,49 @@ def _create_renderer(use_terminal: bool) -> Renderer | None:
 
 
 # ---------------------------------------------------------------------------
+# 熱重載共用邏輯：mod 資料 + rules.py 都重新載入成功才算數，失敗一律保留舊版本
+# ---------------------------------------------------------------------------
+
+
+class ReloadFailed(Exception):
+    """F5 熱重載失敗時使用；呼叫端應該保留重新載入前的 db/bridge/scene 繼續遊戲。"""
+
+
+def _reload_mods_and_rules(bridge: Bridge):
+    """回傳新的 (db, report)。任何一步失敗都會拋出 ReloadFailed，bridge.rules 保持原本還能用的版本。"""
+    new_db, new_report = load_mods(MODS_DIR)
+    if new_report.has_fatal:
+        raise ReloadFailed("mod 資料重新載入後出現致命錯誤，已繼續使用原本的版本：\n" + new_report.format_text())
+    try:
+        bridge.reload()
+    except RulesReloadError as exc:
+        raise ReloadFailed(str(exc)) from exc
+    return new_db, new_report
+
+
+def _build_battle(
+    bridge: Bridge,
+    db,
+    deck: list[dict],
+    *,
+    tier: str | None = None,
+    enemy_full_id: str | None = None,
+    hp: int | None = None,
+    max_hp: int | None = None,
+    floor: int = 1,
+    supports_animation: bool = True,
+) -> BattleScene:
+    """建立一場新的戰鬥；初次進場或 F5 重開都走這裡，確保兩者邏輯一致。"""
+    player = bridge.create_player(deck)
+    if hp is not None:
+        player["hp"] = hp
+        player["max_hp"] = max_hp
+    enemy_data = pick_enemy(db.enemies, full_id=enemy_full_id, tier=tier)
+    enemy = bridge.create_enemy(enemy_data)
+    return BattleScene(bridge, player, enemy, floor=floor, supports_animation=supports_animation)
+
+
+# ---------------------------------------------------------------------------
 # 正式流程：loading -> title -> run（battle / reward / rest）-> result
 # ---------------------------------------------------------------------------
 
@@ -62,9 +108,10 @@ def _create_renderer(use_terminal: bool) -> Renderer | None:
 class GameController:
     """管理整個 scene 狀態機，一次只有一個 scene 在跑。"""
 
-    def __init__(self, db, report: LoadReport) -> None:
+    def __init__(self, db, report: LoadReport, *, supports_animation: bool = True) -> None:
         self.db = db
         self.report = report
+        self.supports_animation = supports_animation
         self.bridge: Bridge | None = None
         self.run: Run | None = None
         self.quit_requested = False
@@ -72,6 +119,9 @@ class GameController:
 
     def handle(self, actions) -> None:
         self.scene.handle(actions)
+        if isinstance(self.scene, BattleScene) and self.scene.reload_requested:
+            self._handle_reload()
+            return
         self._advance_if_needed()
 
     def update(self, dt: float) -> None:
@@ -143,21 +193,61 @@ class GameController:
 
     def _enter_battle(self, tier: str | None) -> None:
         try:
-            player = self.bridge.create_player(self.run.deck)
-            if self.run.max_hp is None:
-                self.run.record_hp(player["hp"], player["max_hp"])
-            else:
-                player["hp"] = self.run.hp
-                player["max_hp"] = self.run.max_hp
-            enemy_data = pick_enemy(self.db.enemies, tier=tier)
-            enemy = self.bridge.create_enemy(enemy_data)
+            self.scene = _build_battle(
+                self.bridge,
+                self.db,
+                self.run.deck,
+                tier=tier,
+                hp=self.run.hp,
+                max_hp=self.run.max_hp,
+                floor=self.run.floor,
+                supports_animation=self.supports_animation,
+            )
         except ModCallError as exc:
             self.scene = ResultScene(victory=False, message="\n".join(exc.panel_lines()))
             return
         except (KeyError, ValueError) as exc:
             self.scene = ResultScene(victory=False, message=str(exc))
             return
-        self.scene = BattleScene(self.bridge, player, enemy, floor=self.run.floor)
+        if self.run.max_hp is None:
+            player_view = self.bridge.player_view(self.scene.player)
+            self.run.record_hp(player_view["hp"], player_view["max_hp"])
+
+    # -- F5 熱重載 ---------------------------------------------------------
+
+    def _handle_reload(self) -> None:
+        scene = self.scene
+        scene.reload_requested = False
+        tier = self.run.current_stage.get("tier") if self.run and self.run.current_stage else None
+
+        try:
+            new_db, new_report = _reload_mods_and_rules(self.bridge)
+        except ReloadFailed as exc:
+            scene.battle_log.append(f"重新載入失敗：{exc}")
+            return
+
+        self.db = new_db
+        self.report = new_report
+        try:
+            new_scene = _build_battle(
+                self.bridge,
+                self.db,
+                self.run.deck,
+                tier=tier,
+                hp=self.run.hp,
+                max_hp=self.run.max_hp,
+                floor=self.run.floor,
+                supports_animation=self.supports_animation,
+            )
+        except ModCallError as exc:
+            scene.battle_log.append("重新載入後無法重開戰鬥：" + "\n".join(exc.panel_lines()))
+            return
+        except (KeyError, ValueError) as exc:
+            scene.battle_log.append(f"重新載入後無法重開戰鬥：{exc}")
+            return
+
+        new_scene.battle_log.append("已重新載入 mod 資料與 rules.py，戰鬥重新開始。")
+        self.scene = new_scene
 
 
 def run_game(use_terminal: bool) -> int:
@@ -169,7 +259,7 @@ def run_game(use_terminal: bool) -> int:
     if renderer is None:
         return 1
 
-    controller = GameController(db, report)
+    controller = GameController(db, report, supports_animation=renderer.supports_animation())
 
     grid = Grid()
     controller.draw(grid)
@@ -216,9 +306,9 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
     bridge = Bridge(RULES_PATH)
     try:
         deck = build_starting_deck(db.cards)
-        player = bridge.create_player(deck)
-        enemy_data = pick_enemy(db.enemies, full_id=enemy_full_id)
-        enemy = bridge.create_enemy(enemy_data)
+        scene = _build_battle(
+            bridge, db, deck, enemy_full_id=enemy_full_id, supports_animation=renderer.supports_animation()
+        )
     except ModCallError as exc:
         print("無法開始戰鬥：")
         print("\n".join(exc.panel_lines()))
@@ -228,8 +318,6 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
         print(f"無法開始戰鬥：{exc}")
         renderer.close()
         return 1
-
-    scene = BattleScene(bridge, player, enemy)
 
     grid = Grid()
     scene.draw(grid)
@@ -245,6 +333,26 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
         now = time.perf_counter()
         dt, last_time = now - last_time, now
         scene.handle(actions)
+
+        if scene.reload_requested:
+            scene.reload_requested = False
+            try:
+                db, report = _reload_mods_and_rules(bridge)
+            except ReloadFailed as exc:
+                scene.battle_log.append(f"重新載入失敗：{exc}")
+            else:
+                try:
+                    new_deck = build_starting_deck(db.cards)
+                    scene = _build_battle(
+                        bridge, db, new_deck, enemy_full_id=enemy_full_id,
+                        supports_animation=renderer.supports_animation(),
+                    )
+                    scene.battle_log.append("已重新載入 mod 資料與 rules.py，戰鬥重新開始。")
+                except ModCallError as exc:
+                    scene.battle_log.append("重新載入後無法重開戰鬥：" + "\n".join(exc.panel_lines()))
+                except (KeyError, ValueError) as exc:
+                    scene.battle_log.append(f"重新載入後無法重開戰鬥：{exc}")
+
         scene.update(dt)
         grid = Grid()
         scene.draw(grid)

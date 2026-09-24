@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from engine.actions import Back, Confirm, EndTurn, Inspect, PlayCard
+from engine.actions import Back, Confirm, EndTurn, Inspect, PlayCard, Reload
 from engine.bridge import Bridge
+from engine.fx import ENEMY_HIT, PLAYER_BLOCK_GAIN, PLAYER_HIT
 from engine.grid import Grid, plain_lines
 from engine.scenes.battle import STATE_PLAYER_TURN, STATE_SHOWING_ERROR, BattleScene
 
@@ -234,3 +235,107 @@ def test_missing_required_function_ends_battle_safely_without_crashing():
     assert scene.state == STATE_SHOWING_ERROR
     assert scene.error_recoverable is False
     assert "check_result" in scene.fatal_error.function_name
+
+
+# ---------------------------------------------------------------------------
+# fx：效果由引擎比較 bridge 呼叫前後的 view 差異自動產生
+# ---------------------------------------------------------------------------
+
+
+def test_playing_damage_card_triggers_enemy_hit_fx():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_active(ENEMY_HIT) is True
+
+
+def test_playing_block_card_triggers_player_block_gain_fx():
+    card = _card(id="defend_like", name="防禦", block=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_active(PLAYER_BLOCK_GAIN) is True
+
+
+def test_enemy_attack_triggers_player_hit_fx():
+    scene = BattleScene(
+        _bridge(), _player([]), _enemy(hp=99, actions=[{"type": "attack", "value": 5}]), supports_animation=True
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(PLAYER_HIT) is True
+
+
+def test_fx_blocks_further_input_until_it_expires():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+    hand_len_during_fx = len(scene.player["hand"])
+
+    # fx 播放期間輸入被忽略，手牌不會變
+    scene.handle([PlayCard(0)])
+    assert len(scene.player["hand"]) == hand_len_during_fx
+
+    scene.update(10.0)  # 讓效果播完
+    assert scene.fx.is_playing is False
+    scene.handle([PlayCard(0)])
+    assert len(scene.player["hand"]) == hand_len_during_fx - 1
+
+
+def test_terminal_mode_never_queues_fx():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=False)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is False
+
+
+def test_update_advances_fx_timers():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+    scene.update(10.0)
+    assert scene.fx.is_playing is False
+
+
+def test_draw_applies_enemy_shake_and_flash_color_while_hit_fx_active():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99, actions=[{"type": "attack", "value": 1}]),
+                         supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_active(ENEMY_HIT) is True
+
+    grid = Grid()
+    scene.draw(grid)
+    # 敵人圖的顏色應該變成 hp（閃紅）而不是原本的 color
+    from engine import layout
+
+    # x=0 是主框的左邊框（frame 色），敵人圖從 x=1 開始找第一個非空白字元。
+    first_char_x = next(
+        x for x in range(1, grid.width) if grid.get(x, layout.ENEMY_ART_TOP).char not in (" ", "")
+    )
+    assert grid.get(first_char_x, layout.ENEMY_ART_TOP).fg == "hp"
+
+
+# ---------------------------------------------------------------------------
+# Reload（F5）：隨時可以按，包含 fx 播放中與錯誤畫面
+# ---------------------------------------------------------------------------
+
+
+def test_reload_sets_flag_even_while_fx_playing():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+    scene.handle([Reload()])
+    assert scene.reload_requested is True
+
+
+def test_reload_sets_flag_even_while_showing_error():
+    bridge = _bridge()
+    bridge.rules.play_card = lambda player, enemy, hand_index: (_ for _ in ()).throw(ValueError("boom"))
+    card = _card(damage=5)
+    scene = BattleScene(bridge, _player([card]), _enemy(hp=99))
+    scene.handle([PlayCard(0)])
+    assert scene.state == STATE_SHOWING_ERROR
+    scene.handle([Reload()])
+    assert scene.reload_requested is True

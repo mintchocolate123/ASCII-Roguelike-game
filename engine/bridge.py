@@ -33,6 +33,10 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+class RulesReloadError(Exception):
+    """F5 熱重載 rules.py 失敗時使用；bridge.rules 這時仍然是重載前那個還能用的版本。"""
+
+
 class ModCallError(Exception):
     """呼叫 mod 函式失敗時的統一例外，帶著可以直接顯示給學生看的中文說明。"""
 
@@ -89,8 +93,18 @@ class Bridge:
         return module
 
     def reload(self) -> None:
-        """F5：重新從磁碟載入 rules.py，讓學生的修改立即生效。"""
-        self.rules = self._load_rules_module()
+        """F5：重新從磁碟載入 rules.py，讓學生的修改立即生效。
+
+        載入失敗時（例如語法錯誤、匯入失敗）會拋出 RulesReloadError，
+        並保留原本還能用的 rules 模組，不會讓遊戲因此壞掉。
+        """
+        try:
+            new_rules = self._load_rules_module()
+        except Exception as exc:  # 刻意攔截所有例外，載入失敗不能讓引擎崩潰
+            raise RulesReloadError(
+                f"重新載入 rules.py 失敗，已繼續使用原本的版本。\n{type(exc).__name__}：{exc}"
+            ) from exc
+        self.rules = new_rules
 
     # ------------------------------------------------------------------
     # 錯誤面板組裝
