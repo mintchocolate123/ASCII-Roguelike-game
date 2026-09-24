@@ -467,10 +467,13 @@ rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引�
 以下兩種效果不是數值變化，view diff 推斷不出來，battle scene 會在知道發生什麼事的當下直接呼叫
 `FxQueue` 提供的明確介面排入效果（`start_card_fly()`／`start_enemy_death()`），不會硬塞進
 `diff_triggers()`：
-- 出牌飛出：卡片打出、從手牌移除前，scene 先記下卡面內容跟原本畫在畫面上的座標（兩段式選取中的
-  卡片畫面上整張上移了一格，飛出動畫要從那個位置開始飛，不是沒選取時的列），呼叫
-  `fx.start_card_fly(card, x, y)`；卡片會往上飛出畫面再消失，跟目前的手牌清單無關。飛出的時間、
-  上升格數是 `engine/fx.py` 的 `CARD_FLY_DURATION`、`CARD_FLY_RISE`。
+- 出牌飛出：卡片打出、從手牌移除前，scene 先記下卡面內容、原本畫在畫面上的座標與尺寸（兩段式
+  選取中的卡片畫面上整張上移了一格，飛出動畫要從那個位置開始飛，不是沒選取時的列），呼叫
+  `fx.start_card_fly(card, x, y, target_x, target_y, width, height)`；終點是敵人圖中心
+  （`layout.ENEMY_ART_CENTER_X/Y`），卡片會邊飛邊逐漸縮小成單格再消失，跟目前的手牌清單無關。
+  內容跟著尺寸一起減少：夠大時完整顯示費用／卡名／描述，縮到中等只剩卡名的方框，再縮小只剩
+  框線殘影，最後縮成單格只留一個代表卡牌類型的色塊（`◆`）。飛行時間是 `engine/fx.py` 的
+  `CARD_FLY_DURATION`（刻意調得很短，才有打擊感）。
 - 敵人死亡：scene 偵測到 enemy hp 從 > 0 掉到 <= 0 時呼叫 `fx.start_enemy_death(art)`，ASCII 圖
   逐行消失（從最後一行開始收），時間是 `engine/fx.py` 的 `ENEMY_DEATH_DURATION`。battle scene 會
   等這個動畫播完（或被跳過）才把 `finished` 設成 True，`_check_and_maybe_end()` 判斷勝負後如果

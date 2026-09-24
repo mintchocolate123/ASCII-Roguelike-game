@@ -1,6 +1,5 @@
 from engine.fx import (
     CARD_FLY_DURATION,
-    CARD_FLY_RISE,
     DAMAGE_NUMBER_DURATION,
     DAMAGE_NUMBER_FADE_AT,
     DAMAGE_NUMBER_RISE,
@@ -195,37 +194,85 @@ def test_trigger_intent_change_flashes_and_expires():
 # ---------------------------------------------------------------------------
 
 
-def test_start_card_fly_stores_snapshot_and_position():
+def test_card_fly_duration_is_short_for_snappy_feel():
+    assert CARD_FLY_DURATION <= 0.3
+
+
+def test_start_card_fly_stores_snapshot_position_size_and_target():
     fx = FxQueue()
     card = {"name": "斬擊", "cost": 1, "type": "attack", "description": "造成 6 點傷害。"}
-    fx.start_card_fly(card, x=5, y=21)
+    fx.start_card_fly(card, x=5, y=21, target_x=32, target_y=8, width=12, height=10)
     fly = fx.card_fly
     assert fly is not None
     assert fly.card == card
     assert fly.x == 5
     assert fly.y == 21
+    assert fly.width == 12
+    assert fly.height == 10
+    assert fly.target_x == 32
+    assert fly.target_y == 8
 
 
 def test_card_fly_snapshot_is_independent_of_original_dict():
     """卡片打出後手牌裡的原始物件可能被規則檔繼續變動，飛出動畫要用當下的快照，不能跟著變。"""
     fx = FxQueue()
     card = {"name": "斬擊"}
-    fx.start_card_fly(card, x=0, y=21)
+    fx.start_card_fly(card, x=0, y=21, target_x=32, target_y=8, width=12, height=10)
     card["name"] = "改了"
     assert fx.card_fly.card["name"] == "斬擊"
 
 
-def test_card_fly_rises_over_time():
+def test_card_fly_starts_at_full_size():
     fx = FxQueue()
-    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=1.0)
-    fx.update(0.25)
-    assert fx.card_fly.current_y == 21 - round(CARD_FLY_RISE * 0.25)
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10, duration=1.0)
+    assert fx.card_fly.current_width == 12
+    assert fx.card_fly.current_height == 10
+
+
+def test_card_fly_shrinks_toward_a_single_cell_over_time():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10, duration=1.0)
+    fx.update(0.99)  # 接近結束但還沒被判定失效
+    assert fx.card_fly.current_width == 1
+    assert fx.card_fly.current_height == 1
+
+
+def test_card_fly_center_starts_at_original_card_center():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=20, target_x=40, target_y=8, width=12, height=10, duration=1.0)
+    assert fx.card_fly.current_center == (0 + 12 // 2, 20 + 10 // 2)
+
+
+def test_card_fly_center_moves_toward_target_over_time():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=20, target_x=40, target_y=8, width=12, height=10, duration=1.0)
+    start_cx, start_cy = fx.card_fly.current_center
+    fx.update(0.5)
+    mid_cx, mid_cy = fx.card_fly.current_center
+    assert mid_cx == round(start_cx + (40 - start_cx) * 0.5)
+    assert mid_cy == round(start_cy + (8 - start_cy) * 0.5)
+    fx.update(0.49)  # 累積 elapsed=0.99，應該更靠近 target
+    end_cx, _ = fx.card_fly.current_center
+    assert end_cx > mid_cx
+
+
+def test_card_fly_current_x_y_track_shrinking_box_around_its_center():
+    """target 跟起點相同時中心不會移動，只驗證縮小時左上角座標跟著往中心收攏。"""
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=20, target_x=0, target_y=20, width=12, height=10, duration=1.0)
+    assert fx.card_fly.current_x == 0
+    assert fx.card_fly.current_y == 20
+    fx.update(0.5)
+    w, h = fx.card_fly.current_width, fx.card_fly.current_height
+    cx, cy = fx.card_fly.current_center
+    assert fx.card_fly.current_x == cx - w // 2
+    assert fx.card_fly.current_y == cy - h // 2
 
 
 def test_card_fly_disappears_after_duration():
     fx = FxQueue()
-    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=0.5)
-    fx.update(0.6)
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10, duration=0.2)
+    fx.update(0.3)
     assert fx.card_fly is None
     assert fx.is_playing is False
 
@@ -233,20 +280,20 @@ def test_card_fly_disappears_after_duration():
 def test_card_fly_makes_is_playing_true():
     fx = FxQueue()
     assert fx.is_playing is False
-    fx.start_card_fly({"name": "斬擊"}, x=0, y=21)
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10)
     assert fx.is_playing is True
 
 
 def test_default_card_fly_duration_constant_is_used():
     fx = FxQueue()
-    fx.start_card_fly({"name": "斬擊"}, x=0, y=21)
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10)
     assert fx._card_fly.duration == CARD_FLY_DURATION
 
 
 def test_starting_new_card_fly_replaces_previous_one():
     fx = FxQueue()
-    fx.start_card_fly({"name": "A"}, x=0, y=21)
-    fx.start_card_fly({"name": "B"}, x=3, y=21)
+    fx.start_card_fly({"name": "A"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10)
+    fx.start_card_fly({"name": "B"}, x=3, y=21, target_x=32, target_y=8, width=12, height=10)
     assert fx.card_fly.card["name"] == "B"
 
 
@@ -515,7 +562,7 @@ def test_skip_clears_screen_shake_and_intent_change():
 
 def test_skip_clears_card_fly():
     fx = FxQueue()
-    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=5.0)
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, target_x=32, target_y=8, width=12, height=10, duration=5.0)
     fx.skip()
     assert fx.card_fly is None
     assert fx.is_playing is False

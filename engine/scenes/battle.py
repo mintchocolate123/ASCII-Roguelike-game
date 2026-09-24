@@ -9,6 +9,7 @@ from .. import layout
 from ..actions import Action, Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Reload
 from ..bridge import Bridge, ModCallError
 from ..draw import (
+    TYPE_COLORS,
     TYPE_LABELS,
     draw_ascii_art,
     draw_banner,
@@ -346,8 +347,17 @@ class BattleScene(Scene):
         self._trigger_fx(before_player, before_enemy)
 
         if self.supports_animation:
-            # 出牌飛出：不是數值變化，直接明確呼叫，記下這張卡原本畫在畫面上的位置。
-            self.fx.start_card_fly(card, layout.card_slot_x(index), card_y)
+            # 出牌飛出：不是數值變化，直接明確呼叫，記下這張卡原本畫在畫面上的位置跟尺寸；
+            # 終點是敵人圖中心，飛的過程中逐漸縮小。
+            self.fx.start_card_fly(
+                card,
+                layout.card_slot_x(index),
+                card_y,
+                layout.ENEMY_ART_CENTER_X,
+                layout.ENEMY_ART_CENTER_Y,
+                layout.CARD_WIDTH,
+                layout.CARD_HEIGHT,
+            )
 
         if not self._call_hook("after_play", self.player, self.enemy, index):
             return
@@ -550,21 +560,44 @@ class BattleScene(Scene):
         self._draw_end_turn_button(grid)
 
     def _draw_flying_card(self, grid: Grid) -> None:
-        """出牌飛出：卡片打出的當下記下卡面內容跟原本的位置，往上飛出畫面再消失，
-        跟目前的手牌清單無關（那張卡此時已經從手牌移除了）。"""
+        """出牌飛出：卡片打出的當下記下卡面內容跟原本的位置，往敵人圖中心飛，過程中逐漸縮小，
+        跟目前的手牌清單無關（那張卡此時已經從手牌移除了）。內容跟著尺寸一起減少：
+        還夠大時完整顯示（費用／卡名／描述）-> 縮到中等只剩卡名的方框 -> 再縮小只剩框線殘影
+        -> 最後縮成單格，只留一個代表卡牌類型的色塊再消失。"""
         fly = self.fx.card_fly
         if fly is None:
             return
-        draw_card(
-            grid,
-            fly.x,
-            fly.current_y,
-            name=fly.card.get("name", "?"),
-            cost=fly.card.get("cost", 0),
-            card_type=fly.card.get("type", "attack"),
-            description=fly.card.get("description", ""),
-            playable=True,
-        )
+        w = fly.current_width
+        h = fly.current_height
+        x = fly.current_x
+        y = fly.current_y
+        card = fly.card
+        color = TYPE_COLORS.get(card.get("type", "attack"), "frame")
+
+        if w <= 1 or h <= 1:
+            grid.set_cell(x, y, "◆", color)
+            return
+
+        if w >= 8 and h >= 6:
+            draw_card(
+                grid,
+                x,
+                y,
+                name=card.get("name", "?"),
+                cost=card.get("cost", 0),
+                card_type=card.get("type", "attack"),
+                description=card.get("description", ""),
+                playable=True,
+                w=w,
+                h=h,
+            )
+            return
+
+        draw_box(grid, x, y, w, h, fg=color, style="double")
+        if h >= 3:
+            name = card.get("name", "?")
+            name_x = x + max(1, (w - text_width(name)) // 2)
+            draw_text(grid, name_x, y + 1, name, color)
 
     def _card_playable_for_display(self, index: int) -> bool:
         """畫面上要不要把卡片畫成灰階；這裡失敗就保守顯示成可以使用，

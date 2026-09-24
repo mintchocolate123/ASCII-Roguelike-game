@@ -634,7 +634,7 @@ def test_next_input_after_skip_is_treated_as_a_normal_action():
 # ---------------------------------------------------------------------------
 
 
-def test_playing_card_starts_card_fly_with_snapshot_and_slot_position():
+def test_playing_card_starts_card_fly_with_snapshot_slot_position_and_enemy_target():
     card = _card(name="斬擊", damage=5)
     scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
     scene.handle([PlayCard(0)])
@@ -643,6 +643,44 @@ def test_playing_card_starts_card_fly_with_snapshot_and_slot_position():
     assert fly.card["name"] == "斬擊"
     assert fly.x == layout.card_slot_x(0)
     assert fly.y == layout.HAND_ROW_TOP
+    assert fly.width == layout.CARD_WIDTH
+    assert fly.height == layout.CARD_HEIGHT
+    # 終點是敵人圖中心，不是往上飛出畫面。
+    assert fly.target_x == layout.ENEMY_ART_CENTER_X
+    assert fly.target_y == layout.ENEMY_ART_CENTER_Y
+
+
+def test_card_fly_shrinks_and_moves_toward_enemy_center_over_time():
+    card = _card(name="斬擊", damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    fly = scene.fx.card_fly
+    start_width = fly.current_width
+    start_center = fly.current_center
+
+    scene.update(fly.duration * 0.7)
+    assert fly.current_width < start_width  # 持續縮小
+    cx, cy = fly.current_center
+    # 持續朝敵人圖中心靠近（跟起點的距離變短）。
+    start_dist = abs(start_center[0] - layout.ENEMY_ART_CENTER_X) + abs(start_center[1] - layout.ENEMY_ART_CENTER_Y)
+    now_dist = abs(cx - layout.ENEMY_ART_CENTER_X) + abs(cy - layout.ENEMY_ART_CENTER_Y)
+    assert now_dist < start_dist
+
+
+def test_draw_shows_single_cell_glyph_once_card_fly_has_almost_fully_shrunk():
+    card = _card(name="斬擊", damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    fly = scene.fx.card_fly
+    scene.update(fly.duration * 0.99)
+    assert fly.current_width == 1
+    assert fly.current_height == 1
+
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    x, y = fly.current_x, fly.current_y
+    assert lines[y][x] == "◆"
 
 
 def test_playing_selected_card_starts_fly_from_the_raised_row():

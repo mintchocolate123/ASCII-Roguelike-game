@@ -16,8 +16,9 @@ battle scene 自己算好門檻/action_index 後直接呼叫 trigger()，不需�
 
 以下兩種效果不是數值變化，view diff 推斷不出來，battle scene 會在知道發生什麼事的當下
 直接呼叫對應的明確介面排入效果，不會硬塞進 diff_triggers()：
-- 出牌飛出：start_card_fly(card, x, y)，scene 在卡片被打出、從手牌移除前先記下它原本的
-  卡面內容與座標
+- 出牌飛出：start_card_fly(card, x, y, target_x, target_y, width, height)，scene 在卡片被
+  打出、從手牌移除前先記下它原本的卡面內容、座標跟原本的卡片尺寸；卡片會往 target（敵人圖
+  中心）飛，過程中逐漸縮小成單格再消失，不是整張維持原尺寸位移
 - 敵人死亡：start_enemy_death(art)，scene 在偵測到 enemy hp 從 > 0 掉到 <= 0 時呼叫；
   battle scene 會等這個動畫播完（或被跳過）才真正進入 BATTLE_END，避免畫面卡在半途跳走
 
@@ -48,9 +49,7 @@ HP_LAG_DURATION = 0.6  # 較淡的殘影血條追上新血量要花多久
 
 SCREEN_SHAKE_THRESHOLD = 20  # 敵人單次攻擊造成的傷害達到這個門檻，才會整面晃動而不是只晃玩家狀態列
 
-CARD_FLY_DURATION = 0.5  # 出牌後卡片飛出畫面要花多久
-# 手牌最深也是從列 21 開始、卡高 10，往上飄超過這個格數保證會完全飛出 32 列高的畫面。
-CARD_FLY_RISE = 34
+CARD_FLY_DURATION = 0.2  # 出牌後卡片飛向敵人要花多久：距離比之前的「飛出畫面」短很多，要快才有打擊感
 
 ENEMY_DEATH_DURATION = 0.8  # 敵人死亡、ASCII 圖逐行消失的總時間
 
@@ -114,11 +113,15 @@ class _HpLag:
 
 @dataclass
 class _CardFly:
-    """出牌飛出：卡片從原本手牌位置往上飛出畫面。"""
+    """出牌飛出：卡片從原本手牌位置的中心飛向 target（敵人圖中心），過程中逐漸縮小成單格。"""
 
     card: dict
     x: int
     y: int
+    width: int
+    height: int
+    target_x: int
+    target_y: int
     duration: float
     elapsed: float = 0.0
 
@@ -131,8 +134,33 @@ class _CardFly:
         return 0.0 if self.duration <= 0 else min(1.0, self.elapsed / self.duration)
 
     @property
+    def current_width(self) -> int:
+        """從原本的寬度逐漸縮到 1（單格）。"""
+        return max(1, round(self.width - (self.width - 1) * self.progress))
+
+    @property
+    def current_height(self) -> int:
+        return max(1, round(self.height - (self.height - 1) * self.progress))
+
+    @property
+    def current_center(self) -> tuple[int, int]:
+        """目前縮小中的卡片中心，從原本卡片的中心線性飛向 target。"""
+        start_cx = self.x + self.width / 2
+        start_cy = self.y + self.height / 2
+        cx = start_cx + (self.target_x - start_cx) * self.progress
+        cy = start_cy + (self.target_y - start_cy) * self.progress
+        return round(cx), round(cy)
+
+    @property
+    def current_x(self) -> int:
+        """目前縮小中的卡片左上角欄座標（by 中心跟目前寬度反推）。"""
+        cx, _ = self.current_center
+        return cx - self.current_width // 2
+
+    @property
     def current_y(self) -> int:
-        return self.y - round(CARD_FLY_RISE * self.progress)
+        _, cy = self.current_center
+        return cy - self.current_height // 2
 
 
 @dataclass
@@ -218,10 +246,20 @@ class FxQueue:
 
     # -- 出牌飛出 -----------------------------------------------------------
     # 不是數值變化，view diff 推斷不出來：battle scene 在卡片打出、從手牌移除前，
-    # 自己記下卡面內容跟原本畫在畫面上的座標，明確呼叫這個介面排入效果。
+    # 自己記下卡面內容、原本畫在畫面上的座標跟尺寸，明確呼叫這個介面排入效果。
 
-    def start_card_fly(self, card: dict, x: int, y: int, duration: float = CARD_FLY_DURATION) -> None:
-        self._card_fly = _CardFly(dict(card), x, y, duration)
+    def start_card_fly(
+        self,
+        card: dict,
+        x: int,
+        y: int,
+        target_x: int,
+        target_y: int,
+        width: int,
+        height: int,
+        duration: float = CARD_FLY_DURATION,
+    ) -> None:
+        self._card_fly = _CardFly(dict(card), x, y, width, height, target_x, target_y, duration)
 
     @property
     def card_fly(self) -> _CardFly | None:
