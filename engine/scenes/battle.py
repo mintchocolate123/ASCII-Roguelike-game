@@ -27,14 +27,32 @@ from ..draw import (
 from ..fx import (
     ENEMY_BLOCK_GAIN,
     ENEMY_HIT,
+    INTENT_CHANGE,
     PLAYER_BLOCK_GAIN,
     PLAYER_HIT,
+    SCREEN_SHAKE,
+    SCREEN_SHAKE_THRESHOLD,
     FxQueue,
     diff_damage_numbers,
     diff_triggers,
 )
 from ..grid import Grid
 from .scene import Scene
+
+
+class _ShiftedGrid:
+    """把 set_cell 的欄座標整體位移 dx 格的 grid 包裝，只用來實作頭目大招的整面畫面晃動。
+    只包裝 draw.py 實際會用到的介面（width/height/set_cell），dx 通常是 -1、0、1。"""
+
+    def __init__(self, grid: Grid, dx: int) -> None:
+        self._grid = grid
+        self._dx = dx
+        self.width = grid.width
+        self.height = grid.height
+
+    def set_cell(self, x: int, y: int, char: str, fg: str = "text", bg: str | None = None, wide_tail: bool = False) -> None:
+        self._grid.set_cell(x + self._dx, y, char, fg, bg, wide_tail)
+
 
 STATE_BATTLE_START = "battle_start"
 STATE_PLAYER_TURN = "player_turn"
@@ -75,6 +93,7 @@ class BattleScene(Scene):
         self.error_recoverable = False
         self._resume_state: str | None = None
         self.finished = False
+        self._pending_finish = False  # 分出勝負後，等敵人死亡動畫播完（或被跳過）才真的設 finished
 
         self.fx = FxQueue()
         self.reload_requested = False
@@ -99,7 +118,12 @@ class BattleScene(Scene):
         return True
 
     def _check_and_maybe_end(self) -> bool:
-        """呼叫 check_result；分出勝負就轉成 BATTLE_END。回傳戰鬥是否已經結束（含出錯）。"""
+        """呼叫 check_result；分出勝負就轉成 BATTLE_END。回傳戰鬥是否已經結束（含出錯）。
+
+        如果敵人死亡動畫正在播（self.fx.enemy_death_active），先不設定 finished，
+        等動畫播完（或被跳過）由 update() 補設，避免下一個畫面在動畫播到一半時就跳走。"""
+        if self._pending_finish:
+            return True
         try:
             result = self.bridge.check_result(self.player, self.enemy)
         except ModCallError as exc:
@@ -110,7 +134,10 @@ class BattleScene(Scene):
             self.state = STATE_BATTLE_END
             self._log("你獲勝了！" if result == "win" else "你被擊敗了……")
             self._call_hook("on_battle_end", self.player, self.enemy)
-            self.finished = True
+            if self.fx.enemy_death_active:
+                self._pending_finish = True
+            else:
+                self.finished = True
             return True
         return False
 
@@ -122,7 +149,7 @@ class BattleScene(Scene):
             return
         self._enter_player_turn()
 
-    def _enter_player_turn(self) -> None:
+    def _enter_player_turn(self, *, prev_action_index: int | None = None) -> None:
         self.state = STATE_PLAYER_TURN
         try:
             self.bridge.start_turn(self.player)
@@ -137,6 +164,15 @@ class BattleScene(Scene):
             self.current_intent = self.bridge.get_enemy_intent(self.enemy)
         except ModCallError as exc:
             self._fatal(exc)
+            return
+        if (
+            self.supports_animation
+            and prev_action_index is not None
+            and self.enemy.get("action_index") != prev_action_index
+        ):
+            # 意圖變化：敵人切換到下一個行動時，意圖那一行閃一下。不是數值變化，
+            # 直接比較 action_index 就好，不需要塞進 diff_triggers()。
+            self.fx.trigger(INTENT_CHANGE)
 
     def _enter_enemy_turn(self) -> None:
         self.state = STATE_ENEMY_TURN
@@ -144,6 +180,7 @@ class BattleScene(Scene):
             return
         if not self._call_hook("on_turn_end", self.player):
             return
+        prev_action_index = self.enemy.get("action_index")
         before_player = dict(self.bridge.player_view(self.player))
         before_enemy = dict(self.bridge.enemy_view(self.enemy))
         try:
@@ -152,13 +189,13 @@ class BattleScene(Scene):
             self._fatal(exc)
             return
         self._log(message)
-        self._trigger_fx(before_player, before_enemy)
+        self._trigger_fx(before_player, before_enemy, is_enemy_attack=True)
         if self._check_and_maybe_end():
             return
         self.turn += 1
-        self._enter_player_turn()
+        self._enter_player_turn(prev_action_index=prev_action_index)
 
-    def _trigger_fx(self, before_player: dict, before_enemy: dict) -> None:
+    def _trigger_fx(self, before_player: dict, before_enemy: dict, *, is_enemy_attack: bool = False) -> None:
         """比較呼叫前後的 view，自動排入對應的效果。終端機版／--no-fx（supports_animation=False）
         直接略過，不會排入任何效果。"""
         if not self.supports_animation:
@@ -174,6 +211,20 @@ class BattleScene(Scene):
 
         for origin, before, after in (("player", before_player, after_player), ("enemy", before_enemy, after_enemy)):
             self.fx.start_hp_lag(origin, before.get("hp", 0), after.get("hp", 0))
+
+        if is_enemy_attack:
+            # 頭目大招整面晃動：敵人單次攻擊造成的傷害（打進 hp 的 + 被護盾吸收的）達到門檻才整面晃，
+            # 沒達到門檻的一般攻擊維持原本只晃受擊方（enemy_hit 只晃敵人圖；玩家被打只閃紅，不新增晃動）。
+            hp_lost = before_player.get("hp", 0) - after_player.get("hp", 0)
+            block_absorbed = before_player.get("block", 0) - after_player.get("block", 0)
+            total_damage = max(0, hp_lost) + max(0, block_absorbed)
+            if total_damage >= SCREEN_SHAKE_THRESHOLD:
+                self.fx.trigger(SCREEN_SHAKE)
+
+        # 敵人死亡：不是數值變化本身，是「hp 從 > 0 掉到 <= 0」這個事件，view diff 的
+        # diff_triggers() 只回傳 kind 字串沒辦法帶 art，這裡直接明確呼叫 start_enemy_death()。
+        if before_enemy.get("hp", 0) > 0 and after_enemy.get("hp", 0) <= 0:
+            self.fx.start_enemy_death(after_enemy.get("art", []))
 
     def _fatal(self, error: ModCallError) -> None:
         """battle 流程本身出錯：顯示錯誤面板，玩家確認後結束整場戰鬥（回到標題等級的安全狀態）。"""
@@ -245,7 +296,9 @@ class BattleScene(Scene):
             self.inspect_index = None
             return
         if self.selected_index == index:
-            self.selected_index = None
+            # 不在這裡先清掉 selected_index：_play_card 需要知道這張卡點擊當下是不是選取中，
+            # 才能算出飛出動畫該從哪一列（選取中的卡畫面上整張上移了一格）開始飛。
+            # _play_card 自己會在算完之後把 selected_index 清掉。
             self._play_card(index)
             return
         self.inspect_index = index
@@ -263,6 +316,7 @@ class BattleScene(Scene):
         if index < 0 or index >= len(hand):
             self._log("沒有這張牌。")
             return
+        card = hand[index]  # 出牌成功後會被移出手牌，先記下卡面內容給飛出動畫用
 
         try:
             can = self.bridge.can_play(self.player, index)
@@ -285,8 +339,15 @@ class BattleScene(Scene):
             return
         self._log(message)
         self.inspect_index = None
+        card_y = layout.HAND_ROW_TOP + (
+            layout.SELECTED_CARD_ROW_OFFSET if self.selected_index == index else 0
+        )
         self.selected_index = None
         self._trigger_fx(before_player, before_enemy)
+
+        if self.supports_animation:
+            # 出牌飛出：不是數值變化，直接明確呼叫，記下這張卡原本畫在畫面上的位置。
+            self.fx.start_card_fly(card, layout.card_slot_x(index), card_y)
 
         if not self._call_hook("after_play", self.player, self.enemy, index):
             return
@@ -298,19 +359,29 @@ class BattleScene(Scene):
 
     def update(self, dt: float) -> None:
         self.fx.update(dt)
+        if self._pending_finish and not self.fx.is_playing:
+            self._pending_finish = False
+            self.finished = True
 
     def draw(self, grid: Grid) -> None:
         if self.state == STATE_SHOWING_ERROR:
             self._draw_error_panel(grid)
             return
+        # 頭目大招整面晃動：套一層幫座標加位移的 grid 包裝，這次畫面剩下的內容全部一起偏移，
+        # 不用在每個 _draw_* 裡各自加位移。
+        target = grid
+        screen_dx = self.fx.shake_offset(SCREEN_SHAKE)
+        if screen_dx:
+            target = _ShiftedGrid(grid, screen_dx)
         player_view = self.bridge.player_view(self.player)
         enemy_view = self.bridge.enemy_view(self.enemy)
-        self._draw_frame(grid)
-        self._draw_enemy(grid, enemy_view)
-        self._draw_right_panel(grid, player_view)
-        self._draw_player_status(grid, player_view)
-        self._draw_hand(grid, player_view)
-        self._draw_hint(grid)
+        self._draw_frame(target)
+        self._draw_enemy(target, enemy_view)
+        self._draw_right_panel(target, player_view)
+        self._draw_player_status(target, player_view)
+        self._draw_hand(target, player_view)
+        self._draw_flying_card(target)
+        self._draw_hint(target)
 
     # -- 主框 -----------------------------------------------------------
 
@@ -350,10 +421,13 @@ class BattleScene(Scene):
     # -- 敵人 -------------------------------------------------------------
 
     def _draw_enemy(self, grid: Grid, enemy_view: dict) -> None:
-        art = enemy_view.get("art", [])
-        art_width = max((text_width(line) for line in art), default=0)
+        full_art = enemy_view.get("art", [])
+        # 敵人死亡：ASCII 圖逐行消失。寬度用完整的圖算，不要用逐漸變少的那幾行算，
+        # 不然圖會一邊消失一邊左右跳動。
+        art = self.fx.enemy_death_art if self.fx.enemy_death_active else full_art
+        art_width = max((text_width(line) for line in full_art), default=0)
         left_width = layout.LEFT_CONTENT_END - layout.LEFT_CONTENT_START + 1
-        art_x = layout.LEFT_CONTENT_START + max(0, (left_width - art_width) // 2) + self.fx.shake_offset()
+        art_x = layout.LEFT_CONTENT_START + max(0, (left_width - art_width) // 2) + self.fx.shake_offset(ENEMY_HIT)
         art_color = "hp" if self.fx.flash_on(ENEMY_HIT) else enemy_view.get("color", "white")
         draw_ascii_art(grid, art_x, layout.ENEMY_ART_TOP, art, fg=art_color)
 
@@ -376,7 +450,10 @@ class BattleScene(Scene):
 
         if self.current_intent is not None:
             intent = self._format_intent(self.current_intent)
-            intent_color = "attack" if self.current_intent.get("type") == "attack" else "skill"
+            if self.fx.flash_on(INTENT_CHANGE):
+                intent_color = "highlight"
+            else:
+                intent_color = "attack" if self.current_intent.get("type") == "attack" else "skill"
             intent_x = layout.LEFT_CONTENT_START + max(0, (left_width - text_width(intent)) // 2)
             draw_text(grid, intent_x, layout.ENEMY_INTENT_ROW, intent, fg=intent_color)
 
@@ -471,6 +548,23 @@ class BattleScene(Scene):
                 highlighted=selected or (i == self.inspect_index),
             )
         self._draw_end_turn_button(grid)
+
+    def _draw_flying_card(self, grid: Grid) -> None:
+        """出牌飛出：卡片打出的當下記下卡面內容跟原本的位置，往上飛出畫面再消失，
+        跟目前的手牌清單無關（那張卡此時已經從手牌移除了）。"""
+        fly = self.fx.card_fly
+        if fly is None:
+            return
+        draw_card(
+            grid,
+            fly.x,
+            fly.current_y,
+            name=fly.card.get("name", "?"),
+            cost=fly.card.get("cost", 0),
+            card_type=fly.card.get("type", "attack"),
+            description=fly.card.get("description", ""),
+            playable=True,
+        )
 
     def _card_playable_for_display(self, index: int) -> bool:
         """畫面上要不要把卡片畫成灰階；這裡失敗就保守顯示成可以使用，

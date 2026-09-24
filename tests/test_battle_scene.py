@@ -3,7 +3,7 @@ from pathlib import Path
 from engine import layout
 from engine.actions import Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Reload
 from engine.bridge import Bridge
-from engine.fx import ENEMY_HIT, PLAYER_BLOCK_GAIN, PLAYER_HIT
+from engine.fx import ENEMY_HIT, INTENT_CHANGE, PLAYER_BLOCK_GAIN, PLAYER_HIT, SCREEN_SHAKE, SCREEN_SHAKE_THRESHOLD
 from engine.grid import Grid, plain_lines
 from engine.scenes.battle import STATE_PLAYER_TURN, STATE_SHOWING_ERROR, BattleScene
 
@@ -71,6 +71,8 @@ def test_play_card_deals_damage_and_wins_when_enemy_dies():
     scene.handle([PlayCard(0)])
     assert scene.enemy["hp"] == 0
     assert scene.result == "win"
+    # finished 要等敵人死亡動畫播完才會設成 True（見「敵人死亡」一節）。
+    scene.update(999)
     assert scene.finished is True
     assert any("獲勝" in m for m in scene.battle_log)
 
@@ -625,3 +627,261 @@ def test_next_input_after_skip_is_treated_as_a_normal_action():
     assert scene.fx.is_playing is False
     scene.handle([PlayCard(0)])  # 這次是正常輸入，應該真的出牌
     assert scene.enemy["hp"] == 87  # 93 - 6
+
+
+# ---------------------------------------------------------------------------
+# 出牌飛出：卡片打出的當下記下卡面內容跟原本座標，之後往上飛出畫面再消失
+# ---------------------------------------------------------------------------
+
+
+def test_playing_card_starts_card_fly_with_snapshot_and_slot_position():
+    card = _card(name="斬擊", damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    fly = scene.fx.card_fly
+    assert fly is not None
+    assert fly.card["name"] == "斬擊"
+    assert fly.x == layout.card_slot_x(0)
+    assert fly.y == layout.HAND_ROW_TOP
+
+
+def test_playing_selected_card_starts_fly_from_the_raised_row():
+    """兩段式點擊選取中的卡片畫面上會整張上移一格，出牌飛出動畫要接著從那個位置開始飛，
+    不能瞬間跳回沒選取時的列。"""
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([ClickCard(0)])  # 第一下選取
+    scene.handle([ClickCard(0)])  # 第二下出牌
+    fly = scene.fx.card_fly
+    assert fly is not None
+    assert fly.y == layout.HAND_ROW_TOP + layout.SELECTED_CARD_ROW_OFFSET
+
+
+def test_terminal_mode_never_starts_card_fly():
+    card = _card(damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=False)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.card_fly is None
+
+
+def test_draw_shows_flying_card_name_at_its_current_position():
+    card = _card(name="斬擊", damage=5)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    fly = scene.fx.card_fly
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    assert "斬擊" in lines[fly.current_y + 1]  # 卡片第 1 列（從 0 開始）畫卡名
+
+
+def test_card_fly_clears_when_skipped_by_next_input():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.card_fly is not None
+    scene.handle([PlayCard(0)])  # 任意輸入快轉
+    assert scene.fx.card_fly is None
+
+
+# ---------------------------------------------------------------------------
+# 敵人死亡：ASCII 圖逐行消失，播完（或被跳過）才真的進入下一個畫面
+# ---------------------------------------------------------------------------
+
+
+def test_enemy_death_starts_when_hp_drops_to_zero():
+    card = _card(damage=10)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=5), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.enemy_death_active is True
+    assert scene.result == "win"
+
+
+def test_finished_waits_for_enemy_death_animation_to_complete():
+    card = _card(damage=10)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=5), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.finished is False  # 動畫還沒播完，不能直接跳下一個畫面
+
+    scene.update(999)  # 讓動畫播完
+    assert scene.fx.enemy_death_active is False
+    assert scene.finished is True
+
+
+def test_enemy_death_animation_can_be_skipped_by_any_input():
+    card = _card(damage=10)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=5), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.finished is False
+
+    scene.handle([EndTurn()])  # 任意輸入：快轉動畫
+    assert scene.fx.enemy_death_active is False
+    assert scene.finished is False  # 要下一次 update() 才會真的把 finished 設成 True
+
+    scene.update(0.0)
+    assert scene.finished is True
+
+
+def test_terminal_mode_finishes_immediately_without_death_animation():
+    card = _card(damage=10)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=5), supports_animation=False)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.enemy_death_active is False
+    assert scene.finished is True
+
+
+def test_draw_uses_shrinking_death_art_instead_of_full_art():
+    enemy = _enemy(hp=5, actions=[{"type": "attack", "value": 1}])
+    enemy["art"] = ["aaaa", "bbbb", "cccc", "dddd"]
+    card = _card(damage=10)
+    scene = BattleScene(_bridge(), _player([card]), enemy, supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.enemy_death_art == enemy["art"]  # 剛觸發，還沒開始消失
+
+    scene.update(scene.fx._enemy_death.duration / 2)
+    assert scene.fx.enemy_death_art == enemy["art"][:2]
+
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    assert not any("dddd" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# 頭目大招整面晃動：敵人單次攻擊傷害達到門檻才整面晃，一般攻擊維持只晃受擊方
+# ---------------------------------------------------------------------------
+
+
+def test_enemy_attack_at_threshold_triggers_screen_shake():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": SCREEN_SHAKE_THRESHOLD}]),
+        supports_animation=True,
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(SCREEN_SHAKE) is True
+
+
+def test_enemy_attack_below_threshold_does_not_trigger_screen_shake():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": SCREEN_SHAKE_THRESHOLD - 1}]),
+        supports_animation=True,
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(SCREEN_SHAKE) is False
+    assert scene.fx.is_active(PLAYER_HIT) is True  # 一般攻擊還是有受擊反應，只是不整面晃
+
+
+def test_screen_shake_counts_block_absorbed_damage_too():
+    """門檻算的是這次攻擊造成的總傷害（打進 hp 的 + 被護盾吸收的），不是只看扣血量。"""
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": SCREEN_SHAKE_THRESHOLD}]),
+        supports_animation=True,
+    )
+    scene.player["block"] = 15  # 15 點被護盾吸收 + 5 點打進 hp，合計等於門檻
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(SCREEN_SHAKE) is True
+
+
+def test_terminal_mode_never_triggers_screen_shake():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": SCREEN_SHAKE_THRESHOLD}]),
+        supports_animation=False,
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(SCREEN_SHAKE) is False
+
+
+def test_playing_card_against_enemy_never_triggers_screen_shake():
+    """整面晃動只限敵人攻擊玩家；玩家出牌打敵人不管傷害多高都不觸發。"""
+    card = _card(damage=SCREEN_SHAKE_THRESHOLD + 10)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=999), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_active(SCREEN_SHAKE) is False
+
+
+def test_draw_shifts_whole_frame_when_screen_shake_active():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": SCREEN_SHAKE_THRESHOLD}]),
+        supports_animation=True,
+    )
+    scene.handle([EndTurn()])
+    dx = scene.fx.shake_offset(SCREEN_SHAKE)
+    assert dx == -1  # 剛觸發，抖動序列的第一格
+
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    # 上框線中間的 ╦ 本來畫在 PANEL_DIVIDER_COL，整面晃動時應該連同其他內容一起位移 dx 格。
+    assert lines[layout.FRAME_TOP][layout.PANEL_DIVIDER_COL + dx] == "╦"
+
+
+# ---------------------------------------------------------------------------
+# 意圖變化：敵人切換到下一個行動時，意圖那一行閃一下
+# ---------------------------------------------------------------------------
+
+
+def test_ending_turn_flashes_intent_when_action_changes():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": 3}, {"type": "block", "value": 4}]),
+        supports_animation=True,
+    )
+    assert scene.fx.is_active(INTENT_CHANGE) is False  # 開場第一次顯示意圖不算「切換」
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(INTENT_CHANGE) is True
+
+
+def test_intent_flash_does_not_trigger_when_action_cycle_has_only_one_action():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": 3}]),
+        supports_animation=True,
+    )
+    scene.handle([EndTurn()])
+    # 只有一種行動，action_index 繞一圈又回到同一格，等於沒有真的「切換」。
+    assert scene.fx.is_active(INTENT_CHANGE) is False
+
+
+def test_terminal_mode_never_flashes_intent():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": 3}, {"type": "block", "value": 4}]),
+        supports_animation=False,
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.is_active(INTENT_CHANGE) is False
+
+
+def test_draw_uses_highlight_color_for_intent_while_flashing():
+    scene = BattleScene(
+        _bridge(),
+        _player([]),
+        _enemy(actions=[{"type": "attack", "value": 3}, {"type": "block", "value": 4}]),
+        supports_animation=True,
+    )
+    scene.handle([EndTurn()])
+    assert scene.fx.flash_on(INTENT_CHANGE) is True
+
+    grid = Grid()
+    scene.draw(grid)
+    row = layout.ENEMY_INTENT_ROW
+    # 只在左面板內容範圍找，避免抓到欄 0/63 的外框字元（跟意圖文字無關，顏色固定是 frame）。
+    first_char_x = next(
+        x
+        for x in range(layout.LEFT_CONTENT_START, layout.LEFT_CONTENT_END + 1)
+        if grid.get(x, row).char not in (" ", "")
+    )
+    assert grid.get(first_char_x, row).fg == "highlight"

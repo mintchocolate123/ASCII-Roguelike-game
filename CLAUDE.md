@@ -454,9 +454,28 @@ rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引�
 - 護盾增加：護盾數字閃藍色
 - 傷害數字彈出：從受擊位置（`engine/layout.py` 的 `ENEMY_DAMAGE_NUMBER_X/Y`、`PLAYER_DAMAGE_NUMBER_X/Y`）往上飄，扣血的數字用 hp 色，被護盾吸收的量用 block 色；飄動與淡出的時間、上升格數由 `engine/fx.py` 的 `DAMAGE_NUMBER_DURATION`、`DAMAGE_NUMBER_RISE`、`DAMAGE_NUMBER_FADE_AT` 控制，淡出以切換成 dim 色近似（字元格無法做透明漸層）。同一個目標同時出現多個數字時，往右依序錯開排列。
 - 延遲血條：`draw_hp_bar` 支援 `lag_current` 參數，血條本身先跳到新值，殘影（dim 色）留在原本的位置慢慢追上，追上所花的時間是 `engine/fx.py` 的 `HP_LAG_DURATION`。
-- 效果播放期間 battle scene 不接受輸入，但任何輸入（點擊或按鍵）都會讓當前效果立刻結束、直接跳到結果狀態（快轉，不是取消該次輸入）；下一次輸入才會被當成正常的遊戲操作處理。
-- 終端機版本來就不會排入任何效果（`FxQueue` 保持空），也不受這四項動畫影響，畫面完全不變。
-- `python main.py --no-fx` 可以完全關閉動畫效果（閃爍、抖動、傷害數字、延遲血條），方便上課示範時按 F5 後立刻看到改動結果，不用等動畫播完；這個參數只影響 pygame 版，對終端機版沒有作用。
+- 頭目大招整面晃動：敵人單次攻擊造成的傷害（打進 hp 的 + 被護盾吸收的）達到門檻（`engine/fx.py` 的
+  `SCREEN_SHAKE_THRESHOLD`，預設 20）時，整個畫面左右位移 1 格；沒達到門檻的一般攻擊維持原本只晃
+  受擊方（`ENEMY_HIT` 只晃敵人圖，玩家被打只閃紅，不會整面晃）。只限敵人攻擊玩家才會判斷門檻，
+  玩家出牌打敵人不會觸發。battle scene 的 `draw()` 用一個幫座標統一加位移的 `_ShiftedGrid`
+  包裝套用到整次繪圖，不用在每個 `_draw_*` 裡各自處理位移。
+- 意圖變化：敵人切換到下一個行動（`action_index` 改變）時，意圖那一行閃一下；只有一種行動、
+  `action_index` 繞回同一格時不算切換，不會閃。
+
+效果播放期間 battle scene 不接受輸入，但任何輸入（點擊或按鍵）都會讓當前效果立刻結束、直接跳到結果狀態（快轉，不是取消該次輸入）；下一次輸入才會被當成正常的遊戲操作處理。終端機版本來就不會排入任何效果（`FxQueue` 保持空），也不受這些動畫影響，畫面完全不變。`python main.py --no-fx` 可以完全關閉動畫效果，方便上課示範時按 F5 後立刻看到改動結果，不用等動畫播完；這個參數只影響 pygame 版，對終端機版沒有作用。
+
+以下兩種效果不是數值變化，view diff 推斷不出來，battle scene 會在知道發生什麼事的當下直接呼叫
+`FxQueue` 提供的明確介面排入效果（`start_card_fly()`／`start_enemy_death()`），不會硬塞進
+`diff_triggers()`：
+- 出牌飛出：卡片打出、從手牌移除前，scene 先記下卡面內容跟原本畫在畫面上的座標（兩段式選取中的
+  卡片畫面上整張上移了一格，飛出動畫要從那個位置開始飛，不是沒選取時的列），呼叫
+  `fx.start_card_fly(card, x, y)`；卡片會往上飛出畫面再消失，跟目前的手牌清單無關。飛出的時間、
+  上升格數是 `engine/fx.py` 的 `CARD_FLY_DURATION`、`CARD_FLY_RISE`。
+- 敵人死亡：scene 偵測到 enemy hp 從 > 0 掉到 <= 0 時呼叫 `fx.start_enemy_death(art)`，ASCII 圖
+  逐行消失（從最後一行開始收），時間是 `engine/fx.py` 的 `ENEMY_DEATH_DURATION`。battle scene 會
+  等這個動畫播完（或被跳過）才把 `finished` 設成 True，`_check_and_maybe_end()` 判斷勝負後如果
+  死亡動畫正在播就先設 `_pending_finish`，animation 播完或被 skip() 快轉後由 `update()` 補設
+  `finished = True`，避免下一個畫面在動畫播到一半時就跳走。
 
 ## 實作階段與驗收條件
 

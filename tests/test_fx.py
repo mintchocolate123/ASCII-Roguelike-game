@@ -1,13 +1,19 @@
 from engine.fx import (
+    CARD_FLY_DURATION,
+    CARD_FLY_RISE,
     DAMAGE_NUMBER_DURATION,
     DAMAGE_NUMBER_FADE_AT,
     DAMAGE_NUMBER_RISE,
     ENEMY_BLOCK_GAIN,
+    ENEMY_DEATH_DURATION,
     ENEMY_HIT,
     FLASH_INTERVAL,
     HP_LAG_DURATION,
+    INTENT_CHANGE,
     PLAYER_BLOCK_GAIN,
     PLAYER_HIT,
+    SCREEN_SHAKE,
+    SCREEN_SHAKE_THRESHOLD,
     FxQueue,
     diff_damage_numbers,
     diff_triggers,
@@ -144,6 +150,160 @@ def test_clear_removes_all_effects():
     fx.trigger(PLAYER_HIT)
     fx.clear()
     assert fx.is_playing is False
+
+
+def test_screen_shake_threshold_default_is_20():
+    assert SCREEN_SHAKE_THRESHOLD == 20
+
+
+def test_shake_offset_accepts_any_kind_not_just_enemy_hit():
+    """SCREEN_SHAKE（頭目大招整面晃動）跟 ENEMY_HIT 共用同一套抖動時間軸邏輯，只是 kind 不同。"""
+    fx = FxQueue()
+    fx.trigger(SCREEN_SHAKE, duration=1.0)
+    assert fx.shake_offset() == 0  # 預設看 ENEMY_HIT，SCREEN_SHAKE 不會被算進去
+    assert fx.shake_offset(SCREEN_SHAKE) == -1  # 剛觸發，第一格是 -1
+
+
+def test_shake_offset_for_screen_shake_settles_to_zero():
+    fx = FxQueue()
+    fx.trigger(SCREEN_SHAKE, duration=0.5)
+    offsets = []
+    for _ in range(6):
+        offsets.append(fx.shake_offset(SCREEN_SHAKE))
+        fx.update(0.5 / 5)
+    assert any(o != 0 for o in offsets[:-1])
+    assert offsets[-1] == 0
+
+
+# ---------------------------------------------------------------------------
+# 意圖變化：跟閃爍/抖動共用同一套 trigger()/flash_on() 機制，只是換一個 kind
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_intent_change_flashes_and_expires():
+    fx = FxQueue()
+    fx.trigger(INTENT_CHANGE, duration=0.2)
+    assert fx.flash_on(INTENT_CHANGE) is True
+    assert fx.is_playing is True
+    fx.update(0.3)
+    assert fx.is_playing is False
+    assert fx.flash_on(INTENT_CHANGE) is False
+
+
+# ---------------------------------------------------------------------------
+# 出牌飛出：不是數值變化，靠明確的 start_card_fly() 介面排入（不是硬塞進 diff_triggers()）
+# ---------------------------------------------------------------------------
+
+
+def test_start_card_fly_stores_snapshot_and_position():
+    fx = FxQueue()
+    card = {"name": "斬擊", "cost": 1, "type": "attack", "description": "造成 6 點傷害。"}
+    fx.start_card_fly(card, x=5, y=21)
+    fly = fx.card_fly
+    assert fly is not None
+    assert fly.card == card
+    assert fly.x == 5
+    assert fly.y == 21
+
+
+def test_card_fly_snapshot_is_independent_of_original_dict():
+    """卡片打出後手牌裡的原始物件可能被規則檔繼續變動，飛出動畫要用當下的快照，不能跟著變。"""
+    fx = FxQueue()
+    card = {"name": "斬擊"}
+    fx.start_card_fly(card, x=0, y=21)
+    card["name"] = "改了"
+    assert fx.card_fly.card["name"] == "斬擊"
+
+
+def test_card_fly_rises_over_time():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=1.0)
+    fx.update(0.25)
+    assert fx.card_fly.current_y == 21 - round(CARD_FLY_RISE * 0.25)
+
+
+def test_card_fly_disappears_after_duration():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=0.5)
+    fx.update(0.6)
+    assert fx.card_fly is None
+    assert fx.is_playing is False
+
+
+def test_card_fly_makes_is_playing_true():
+    fx = FxQueue()
+    assert fx.is_playing is False
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21)
+    assert fx.is_playing is True
+
+
+def test_default_card_fly_duration_constant_is_used():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21)
+    assert fx._card_fly.duration == CARD_FLY_DURATION
+
+
+def test_starting_new_card_fly_replaces_previous_one():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "A"}, x=0, y=21)
+    fx.start_card_fly({"name": "B"}, x=3, y=21)
+    assert fx.card_fly.card["name"] == "B"
+
+
+# ---------------------------------------------------------------------------
+# 敵人死亡：一樣不是數值變化，靠明確的 start_enemy_death() 介面排入，ASCII 圖逐行消失
+# ---------------------------------------------------------------------------
+
+
+def test_start_enemy_death_shows_full_art_at_start():
+    fx = FxQueue()
+    art = ["line1", "line2", "line3", "line4"]
+    fx.start_enemy_death(art, duration=1.0)
+    assert fx.enemy_death_active is True
+    assert fx.enemy_death_art == art
+
+
+def test_enemy_death_art_shrinks_line_by_line_over_time():
+    fx = FxQueue()
+    art = ["a", "b", "c", "d"]
+    fx.start_enemy_death(art, duration=1.0)
+    fx.update(0.5)
+    assert fx.enemy_death_art == ["a", "b"]
+
+
+def test_enemy_death_ends_after_duration():
+    fx = FxQueue()
+    fx.start_enemy_death(["a", "b"], duration=0.5)
+    fx.update(0.6)
+    assert fx.enemy_death_active is False
+    assert fx.enemy_death_art is None
+    assert fx.is_playing is False
+
+
+def test_enemy_death_not_active_when_never_started():
+    fx = FxQueue()
+    assert fx.enemy_death_active is False
+    assert fx.enemy_death_art is None
+
+
+def test_enemy_death_makes_is_playing_true():
+    fx = FxQueue()
+    fx.start_enemy_death(["x"])
+    assert fx.is_playing is True
+
+
+def test_default_enemy_death_duration_constant_is_used():
+    fx = FxQueue()
+    fx.start_enemy_death(["x"])
+    assert fx._enemy_death.duration == ENEMY_DEATH_DURATION
+
+
+def test_enemy_death_art_snapshot_is_independent_of_original_list():
+    fx = FxQueue()
+    art = ["a", "b"]
+    fx.start_enemy_death(art, duration=1.0)
+    art.append("c")
+    assert fx.enemy_death_art == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +500,33 @@ def test_skip_clears_hp_lag():
     fx.start_hp_lag("enemy", 20, 14, duration=5.0)
     fx.skip()
     assert fx.hp_lag_value("enemy") is None
+    assert fx.is_playing is False
+
+
+def test_skip_clears_screen_shake_and_intent_change():
+    fx = FxQueue()
+    fx.trigger(SCREEN_SHAKE, duration=5.0)
+    fx.trigger(INTENT_CHANGE, duration=5.0)
+    fx.skip()
+    assert fx.is_playing is False
+    assert fx.shake_offset(SCREEN_SHAKE) == 0
+    assert fx.flash_on(INTENT_CHANGE) is False
+
+
+def test_skip_clears_card_fly():
+    fx = FxQueue()
+    fx.start_card_fly({"name": "斬擊"}, x=0, y=21, duration=5.0)
+    fx.skip()
+    assert fx.card_fly is None
+    assert fx.is_playing is False
+
+
+def test_skip_clears_enemy_death():
+    fx = FxQueue()
+    fx.start_enemy_death(["x"], duration=5.0)
+    fx.skip()
+    assert fx.enemy_death_active is False
+    assert fx.enemy_death_art is None
     assert fx.is_playing is False
 
 
