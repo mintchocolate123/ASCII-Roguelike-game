@@ -81,6 +81,27 @@ def test_loading_stuck_when_fatal_never_reaches_title():
     assert controller.run is None
 
 
+def test_supports_mouse_threads_into_loading_title_and_rest_scenes():
+    stages = [{"type": "battle", "tier": "normal"}, {"type": "rest"}]
+    db, report = load_mods(MODS_DIR)
+    normal_enemies = {k: v for k, v in db.enemies.items() if v["tier"] == "normal"}
+    weakest_id = min(normal_enemies, key=lambda k: normal_enemies[k]["hp"])
+    db.enemies = {k: v for k, v in db.enemies.items() if v["tier"] != "normal" or k == weakest_id}
+    db.run_stages = stages
+
+    controller = GameController(db, report, supports_animation=False, supports_mouse=False)
+    assert controller.scene.supports_mouse is False  # LoadingScene
+
+    controller.handle([Confirm()])
+    assert controller.scene.supports_mouse is False  # TitleScene
+
+    controller.handle([Confirm()])
+    _play_through_battle(controller)
+    controller.handle([Back()])  # 跳過獎勵
+    assert isinstance(controller.scene, RestScene)
+    assert controller.scene.supports_mouse is False
+
+
 # ---------------------------------------------------------------------------
 # 打贏一場戰鬥 -> 進入 reward -> 選卡或跳過 -> 進下一關
 # ---------------------------------------------------------------------------
@@ -166,6 +187,7 @@ def test_completing_all_stages_reaches_victory_result():
 
     assert isinstance(controller.scene, ResultScene)
     assert controller.scene.victory is True
+    assert controller.scene.supports_mouse == controller.supports_mouse
 
 
 def test_result_scene_confirm_restarts_to_title():

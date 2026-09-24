@@ -11,9 +11,11 @@ import pygame  # noqa: E402  需要先設好 dummy driver 再 import
 
 from engine.actions import (  # noqa: E402
     Back,
+    ClickButton,
     ClickCard,
     Confirm,
     EndTurn,
+    HoverButton,
     HoverEndTurn,
     HoverSkip,
     Inspect,
@@ -290,3 +292,77 @@ def test_hover_skip_and_hover_end_turn_are_independent(renderer):
     _post(pygame.MOUSEMOTION, pos=pos)
     actions = renderer.poll_actions()
     assert actions == [HoverSkip(True)]
+
+
+# ---------------------------------------------------------------------------
+# title／loading／rest／result 共用的具名選單按鈕
+# ---------------------------------------------------------------------------
+
+
+def _menu_button_pixel(x_const: str, y_const: str) -> tuple[int, int]:
+    from engine import layout
+    from engine.grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH
+
+    col = getattr(layout, x_const) + 1
+    row = getattr(layout, y_const) + 1
+    return col * CELL_PIXEL_WIDTH, row * CELL_PIXEL_HEIGHT
+
+
+def test_click_title_start_button_emits_click_button(renderer):
+    pos = _menu_button_pixel("TITLE_START_BUTTON_X", "TITLE_START_BUTTON_Y")
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    actions = renderer.poll_actions()
+    assert ClickButton("title_start") in actions
+
+
+def test_hover_title_start_button_emits_hover_button(renderer):
+    pos = _menu_button_pixel("TITLE_START_BUTTON_X", "TITLE_START_BUTTON_Y")
+    _post(pygame.MOUSEMOTION, pos=pos)
+    actions = renderer.poll_actions()
+    assert HoverButton("title_start", True) in actions
+
+
+def test_click_loading_continue_button_emits_click_button(renderer):
+    pos = _menu_button_pixel("LOADING_CONTINUE_BUTTON_X", "LOADING_CONTINUE_BUTTON_Y")
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    actions = renderer.poll_actions()
+    assert ClickButton("loading_continue") in actions
+
+
+def test_click_result_restart_and_quit_buttons_are_distinct(renderer):
+    restart_pos = _menu_button_pixel("RESULT_RESTART_BUTTON_X", "RESULT_BUTTON_ROW")
+    _post(pygame.MOUSEBUTTONDOWN, pos=restart_pos, button=1)
+    restart_actions = renderer.poll_actions()
+    assert ClickButton("result_restart") in restart_actions
+    assert ClickButton("result_quit") not in restart_actions
+
+    quit_pos = _menu_button_pixel("RESULT_QUIT_BUTTON_X", "RESULT_BUTTON_ROW")
+    _post(pygame.MOUSEBUTTONDOWN, pos=quit_pos, button=1)
+    quit_actions = renderer.poll_actions()
+    assert ClickButton("result_quit") in quit_actions
+    assert ClickButton("result_restart") not in quit_actions
+
+
+def test_hover_overlapping_menu_buttons_emits_all_matching_names(renderer):
+    """title_start／rest_continue／result_restart 的座標範圍剛好重疊（這幾個畫面不會同時
+    顯示），renderer 不知道現在是哪個 scene，全部名稱都要回報，讓各自的 scene 自己判斷。"""
+    pos = _menu_button_pixel("TITLE_START_BUTTON_X", "TITLE_START_BUTTON_Y")
+    _post(pygame.MOUSEMOTION, pos=pos)
+    actions = renderer.poll_actions()
+    names = {a.name for a in actions if isinstance(a, HoverButton) and a.active}
+    assert names == {"title_start", "rest_continue", "result_restart"}
+
+
+def test_click_outside_any_menu_button_does_not_emit_click_button(renderer):
+    _post(pygame.MOUSEBUTTONDOWN, pos=(5, 5), button=1)
+    actions = renderer.poll_actions()
+    assert not any(isinstance(a, ClickButton) for a in actions)
+
+
+def test_click_on_menu_button_also_emits_click_card_none(renderer):
+    """點到選單按鈕的座標同時也會送出 ClickCard(None)：battle/reward 沒有顯示時
+    這個動作會被忽略，但如果它們剛好在跑，點空白處取消選取的行為不會被按鈕蓋掉。"""
+    pos = _menu_button_pixel("TITLE_START_BUTTON_X", "TITLE_START_BUTTON_Y")
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    actions = renderer.poll_actions()
+    assert ClickCard(None) in actions

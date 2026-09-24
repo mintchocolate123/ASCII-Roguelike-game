@@ -282,6 +282,26 @@ def draw_ascii_art(
         draw_text(grid, x, y + row_offset, line, fg, bg)
 
 
+def draw_button(
+    grid: Grid,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    label: str,
+    key_hint: str = "",
+    hovered: bool = False,
+) -> None:
+    """畫一個雙線框按鈕：平常 frame 色，滑鼠停留時 highlight 色。label 置中；
+    key_hint（例如 "[Enter]"）畫在 label 正下方，留空就不畫。"""
+    fg = "highlight" if hovered else "frame"
+    draw_box(grid, x, y, w, h, fg=fg, style="double")
+    label_y = y + h // 2 - (1 if key_hint else 0)
+    draw_text(grid, x + max(1, (w - text_width(label)) // 2), label_y, label, fg=fg)
+    if key_hint:
+        draw_text(grid, x + max(1, (w - text_width(key_hint)) // 2), y + h // 2 + 1, key_hint, fg=fg)
+
+
 # ---------------------------------------------------------------------------
 # 卡牌
 # ---------------------------------------------------------------------------

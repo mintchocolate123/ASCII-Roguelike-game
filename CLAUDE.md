@@ -219,6 +219,31 @@ pygame 版沒有操作提示列，見下方「操作提示」一節。手牌之�
 - pygame 版：不畫「[1-3] 選擇這張卡　[B] 跳過」的文字提示（`layout.REWARD_HINT_ROW`），滑鼠
   停留在按鈕上就會看到提示。終端機版保留文字提示。
 
+### title／loading／rest／result 的選單按鈕
+
+- 這四個畫面都只有單一個（result 是兩個）「繼續下去」用的按鈕，樣式沿用結束回合／跳過按鈕：
+  雙線框、置中文字、平常 frame 色、滑鼠停留 highlight 色，尺寸是 `layout.MENU_BUTTON_WIDTH`
+  × `layout.MENU_BUTTON_HEIGHT`（16×5，比手牌/獎勵卡的按鈕矮，因為沒有卡片高度的限制）。
+  共用的畫法是 `engine/draw.py` 的 `draw_button()`。
+  - title：「開始遊戲」按鈕，`layout.TITLE_START_BUTTON_X/Y`，按鍵提示 `[Enter]`。
+  - loading：「繼續」按鈕，`layout.LOADING_CONTINUE_BUTTON_X/Y`（在報告框內、下框線正上方）；
+    **有致命錯誤時完全不畫這個按鈕**，畫面維持卡住不能進入的行為。
+  - rest：「繼續前進」按鈕，`layout.REST_CONTINUE_BUTTON_X/Y`，按鍵提示 `[Enter]`。
+  - result：「重新開始」（`layout.RESULT_RESTART_BUTTON_X`，`[Enter]`）與「離開遊戲」
+    （`layout.RESULT_QUIT_BUTTON_X`，`[Esc]`）並排在 `layout.RESULT_BUTTON_ROW`，中間隔
+    `layout.RESULT_BUTTON_GAP`。
+- 點擊／懸停用共用的具名動作 `ClickButton(name)`／`HoverButton(name, active)`（`name` 是
+  `"title_start"`、`"loading_continue"`、`"rest_continue"`、`"result_restart"`、
+  `"result_quit"` 其中之一），**不是**幫每個按鈕各自定義一種 Action。scene 只處理自己認得的
+  名稱，收到別的畫面的按鈕名稱一律忽略。這幾個按鈕的座標刻意沿用畫面正中央的位置，就算跟
+  手牌／獎勵卡的座標範圍重疊也沒關係——這幾個畫面本來就不會跟 battle／reward 同時顯示，靠
+  具名動作被忽略這件事保證安全，不需要刻意避開座標。
+- 點擊這些按鈕實際上等同於鍵盤操作：「繼續」「開始遊戲」「重新開始」等同 `Confirm()`；
+  「離開遊戲」等同 `Back()`（scene 的 `handle()` 對 `ClickButton`／`Confirm` 做一樣的事）。
+- 鍵盤操作（Enter／Esc）維持原樣，不受影響。pygame 版隱藏原本的文字提示（例如「按 Enter
+  開始遊戲」），改成畫按鈕；終端機版沒有滑鼠事件，`supports_mouse=False`，繼續顯示原本的
+  文字提示，行為完全不變。
+
 ## 卡牌描述（engine/cardtext.py）
 
 - CardDef 的 `description` 是選填欄位，可使用佔位符 `{damage}`、`{hits}`、`{block}`、`{heal}`、`{draw}`、`{energy}`、`{self_damage}`。引擎會用卡牌資料的值代入。
@@ -244,24 +269,31 @@ class Renderer:
     def supports_animation(self) -> bool: ...
 ```
 
-- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()`、`Quit()`、`Inspect(index)`、`ClickCard(index)`、`HoverEndTurn(active)`、`Skip()` 和 `HoverSkip(active)`。`Inspect(None)` 表示結束檢視。
+- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()`、`Quit()`、`Inspect(index)`、`ClickCard(index)`、`HoverEndTurn(active)`、`Skip()`、`HoverSkip(active)`、`ClickButton(name)` 和 `HoverButton(name, active)`。`Inspect(None)` 表示結束檢視。
 - `ClickCard(index)` 跟 `PlayCard(index)` 不同：renderer 只負責回報「滑鼠點到第幾張卡」（點空白處是
   `ClickCard(None)`），要不要出牌／加入牌組、要不要進入選取狀態一律由 scene 決定（兩段式點擊的
   狀態存在 scene 裡，不在 renderer；battle scene 跟 reward scene 都用這一組動作）。`PlayCard(index)`／
   `Choose(index)` 只由數字鍵觸發，一律直接生效，不走兩段式。
+- `ClickButton(name)`／`HoverButton(name, active)` 是 title／loading／rest／result 共用的具名
+  按鈕動作（詳見「title／loading／rest／result 的選單按鈕」一節）：renderer 只負責照座標回報
+  按鈕名稱，scene 只理會自己認得的名稱，其餘忽略——這樣即使不同畫面的按鈕座標重疊，也不會
+  誤觸不相干的動作。
 - pygame 版的輸入對應：
   - 按鍵 1 到 7（battle）或 1 到 3（reward）對應 PlayCard 或 Choose，一律直接生效
   - 滑鼠點擊卡牌區域（手牌或獎勵卡）對應 `ClickCard(i)`，點空白處對應 `ClickCard(None)`
   - 滑鼠移入卡牌區域對應 `Inspect(i)`，移出所有卡牌時對應 `Inspect(None)`
   - 滑鼠點擊結束回合按鈕對應 EndTurn；移入/移出按鈕對應 `HoverEndTurn(True)`／`HoverEndTurn(False)`
   - 滑鼠點擊獎勵畫面的跳過按鈕對應 `Skip()`；移入/移出按鈕對應 `HoverSkip(True)`／`HoverSkip(False)`
+  - 滑鼠點擊 title／loading／rest／result 的選單按鈕對應 `ClickButton(name)`；移入/移出對應
+    `HoverButton(name, True)`／`HoverButton(name, False)`
   - E 對應 EndTurn
   - Enter 對應 Confirm
   - F5 對應 Reload
   - Esc 對應 Back
 - 終端機版輸入 `?2` 對應 `Inspect(1)`，輸入 `?` 對應 `Inspect(None)`。終端機版不會送出
-  `ClickCard`／`HoverEndTurn`／`Skip`／`HoverSkip`（沒有滑鼠事件），所以兩段式選取與按鈕變色都
-  不會發生，操作跟原本完全一樣；獎勵畫面的 `b` 鍵維持原本「跳過」的行為。
+  `ClickCard`／`HoverEndTurn`／`Skip`／`HoverSkip`／`ClickButton`／`HoverButton`（沒有滑鼠事件），
+  所以兩段式選取與按鈕變色都不會發生，操作跟原本完全一樣；獎勵畫面的 `b` 鍵維持原本「跳過」的
+  行為。
 - pygame 版使用 `(char, fg, bg)` 作為 key 快取 `font.render()` 結果，只有 grid dirty 時才重畫。
 - 終端機版使用 ANSI 色碼整頁輸出；`poll_actions()` 以 `input()` 阻塞讀取，並把輸入解析成 Action。`supports_animation()` 回傳 False。
 - 終端機版啟動時要把 stdout 設為 UTF-8，以避免 Windows cp950 亂碼。終端機寬度小於 96 欄或高度小於 33 列時，顯示中文提示要求使用者放大視窗，不要輸出跑版的畫面。

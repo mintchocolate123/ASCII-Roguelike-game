@@ -13,6 +13,7 @@ from ..draw import (
     draw_ascii_art,
     draw_banner,
     draw_box,
+    draw_button,
     draw_card,
     draw_energy_pips,
     draw_hline,
@@ -452,14 +453,16 @@ class BattleScene(Scene):
             return True
 
     def _draw_end_turn_button(self, grid: Grid) -> None:
-        x, y = layout.END_TURN_BUTTON_X, layout.END_TURN_BUTTON_Y
-        w, h = layout.END_TURN_BUTTON_WIDTH, layout.END_TURN_BUTTON_HEIGHT
-        fg = "highlight" if self.end_turn_hovered else "frame"
-        draw_box(grid, x, y, w, h, fg=fg, style="double")
-        label = "結束回合"
-        draw_text(grid, x + max(1, (w - text_width(label)) // 2), y + h // 2 - 1, label, fg=fg)
-        key_hint = "[E]"
-        draw_text(grid, x + max(1, (w - text_width(key_hint)) // 2), y + h // 2 + 1, key_hint, fg=fg)
+        draw_button(
+            grid,
+            layout.END_TURN_BUTTON_X,
+            layout.END_TURN_BUTTON_Y,
+            layout.END_TURN_BUTTON_WIDTH,
+            layout.END_TURN_BUTTON_HEIGHT,
+            "結束回合",
+            key_hint="[E]",
+            hovered=self.end_turn_hovered,
+        )
 
     # -- 操作提示 ---------------------------------------------------------
 

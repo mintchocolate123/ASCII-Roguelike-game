@@ -1,5 +1,5 @@
 from engine import layout
-from engine.actions import Back, Choose, ClickCard, Confirm, HoverSkip, PlayCard, Skip
+from engine.actions import Back, Choose, ClickButton, ClickCard, Confirm, HoverButton, HoverSkip, PlayCard, Skip
 from engine.grid import Grid, plain_lines
 from engine.mod.report import LoadReport
 from engine.run import Run
@@ -54,6 +54,63 @@ def test_loading_scene_draws_fatal_message():
     assert any("無法開始遊戲" in line for line in lines)
 
 
+def test_loading_click_continue_button_finishes_when_no_fatal():
+    report = LoadReport()
+    scene = LoadingScene(report)
+    scene.handle([ClickButton("loading_continue")])
+    assert scene.finished is True
+
+
+def test_loading_hover_continue_button_sets_flag():
+    report = LoadReport()
+    scene = LoadingScene(report)
+    assert scene.continue_hovered is False
+    scene.handle([HoverButton("loading_continue", True)])
+    assert scene.continue_hovered is True
+
+
+def test_loading_ignores_unrelated_button_names():
+    report = LoadReport()
+    scene = LoadingScene(report)
+    scene.handle([ClickButton("rest_continue")])
+    assert scene.finished is False
+    scene.handle([HoverButton("rest_continue", True)])
+    assert scene.continue_hovered is False
+
+
+def test_loading_fatal_ignores_click_button_and_stays_stuck():
+    report = LoadReport()
+    report.fatal("core 沒有成功載入")
+    scene = LoadingScene(report)
+    scene.handle([ClickButton("loading_continue")])
+    assert scene.finished is False
+
+
+def test_loading_draws_button_when_not_fatal_and_supports_mouse():
+    report = LoadReport()
+    scene = LoadingScene(report, supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.LOADING_CONTINUE_BUTTON_X, layout.LOADING_CONTINUE_BUTTON_Y).char == "╔"
+
+
+def test_loading_fatal_does_not_draw_button():
+    report = LoadReport()
+    report.fatal("core 沒有成功載入")
+    scene = LoadingScene(report, supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.LOADING_CONTINUE_BUTTON_X, layout.LOADING_CONTINUE_BUTTON_Y).char != "╔"
+
+
+def test_loading_draws_text_prompt_when_not_supports_mouse():
+    report = LoadReport()
+    scene = LoadingScene(report, supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert any("按 Enter 繼續" in line for line in plain_lines(grid))
+
+
 # ---------------------------------------------------------------------------
 # TitleScene
 # ---------------------------------------------------------------------------
@@ -72,6 +129,46 @@ def test_title_scene_draws_title_text():
     scene.draw(grid)
     lines = plain_lines(grid)
     assert any("ASCII 卡牌遊戲" in line for line in lines)
+
+
+def test_title_click_start_button_finishes():
+    scene = TitleScene()
+    scene.handle([ClickButton("title_start")])
+    assert scene.finished is True
+
+
+def test_title_hover_start_button_sets_flag():
+    scene = TitleScene()
+    scene.handle([HoverButton("title_start", True)])
+    assert scene.start_hovered is True
+    scene.handle([HoverButton("title_start", False)])
+    assert scene.start_hovered is False
+
+
+def test_title_ignores_unrelated_button_names():
+    scene = TitleScene()
+    scene.handle([ClickButton("result_restart")])
+    assert scene.finished is False
+
+
+def test_title_draws_button_and_highlights_on_hover():
+    scene = TitleScene(supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.TITLE_START_BUTTON_X, layout.TITLE_START_BUTTON_Y).char == "╔"
+    assert grid.get(layout.TITLE_START_BUTTON_X, layout.TITLE_START_BUTTON_Y).fg == "frame"
+
+    scene.handle([HoverButton("title_start", True)])
+    grid2 = Grid()
+    scene.draw(grid2)
+    assert grid2.get(layout.TITLE_START_BUTTON_X, layout.TITLE_START_BUTTON_Y).fg == "highlight"
+
+
+def test_title_draws_text_prompt_when_not_supports_mouse():
+    scene = TitleScene(supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert any("按 Enter 開始遊戲" in line for line in plain_lines(grid))
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +200,48 @@ def test_rest_scene_draws_healed_amount():
     scene.draw(grid)
     lines = plain_lines(grid)
     assert any("15" in line for line in lines)
+
+
+def test_rest_click_continue_button_finishes():
+    run = Run(stages=[], deck=[])
+    scene = RestScene(run)
+    scene.handle([ClickButton("rest_continue")])
+    assert scene.finished is True
+
+
+def test_rest_hover_continue_button_sets_flag():
+    run = Run(stages=[], deck=[])
+    scene = RestScene(run)
+    scene.handle([HoverButton("rest_continue", True)])
+    assert scene.continue_hovered is True
+
+
+def test_rest_ignores_unrelated_button_names():
+    run = Run(stages=[], deck=[])
+    scene = RestScene(run)
+    scene.handle([ClickButton("title_start")])
+    assert scene.finished is False
+
+
+def test_rest_draws_button_and_highlights_on_hover():
+    run = Run(stages=[], deck=[])
+    scene = RestScene(run, supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.REST_CONTINUE_BUTTON_X, layout.REST_CONTINUE_BUTTON_Y).char == "╔"
+
+    scene.handle([HoverButton("rest_continue", True)])
+    grid2 = Grid()
+    scene.draw(grid2)
+    assert grid2.get(layout.REST_CONTINUE_BUTTON_X, layout.REST_CONTINUE_BUTTON_Y).fg == "highlight"
+
+
+def test_rest_draws_text_prompt_when_not_supports_mouse():
+    run = Run(stages=[], deck=[])
+    scene = RestScene(run, supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert any("按 Enter 繼續前進" in line for line in plain_lines(grid))
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +278,57 @@ def test_result_scene_draws_custom_message():
     grid = Grid()
     scene.draw(grid)
     assert any("自訂的錯誤說明" in line for line in plain_lines(grid))
+
+
+def test_result_click_restart_button_requests_restart():
+    scene = ResultScene(victory=True)
+    scene.handle([ClickButton("result_restart")])
+    assert scene.restart_requested is True
+    assert scene.quit_requested is False
+
+
+def test_result_click_quit_button_requests_quit():
+    scene = ResultScene(victory=False)
+    scene.handle([ClickButton("result_quit")])
+    assert scene.quit_requested is True
+    assert scene.restart_requested is False
+
+
+def test_result_hover_restart_and_quit_buttons_are_independent():
+    scene = ResultScene(victory=True)
+    scene.handle([HoverButton("result_restart", True)])
+    assert scene.restart_hovered is True
+    assert scene.quit_hovered is False
+    scene.handle([HoverButton("result_quit", True)])
+    assert scene.quit_hovered is True
+
+
+def test_result_ignores_unrelated_button_names():
+    scene = ResultScene(victory=True)
+    scene.handle([ClickButton("title_start")])
+    assert scene.restart_requested is False
+    assert scene.quit_requested is False
+
+
+def test_result_draws_both_buttons_and_highlights_independently():
+    scene = ResultScene(victory=True, supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.RESULT_RESTART_BUTTON_X, layout.RESULT_BUTTON_ROW).char == "╔"
+    assert grid.get(layout.RESULT_QUIT_BUTTON_X, layout.RESULT_BUTTON_ROW).char == "╔"
+
+    scene.handle([HoverButton("result_quit", True)])
+    grid2 = Grid()
+    scene.draw(grid2)
+    assert grid2.get(layout.RESULT_RESTART_BUTTON_X, layout.RESULT_BUTTON_ROW).fg == "frame"
+    assert grid2.get(layout.RESULT_QUIT_BUTTON_X, layout.RESULT_BUTTON_ROW).fg == "highlight"
+
+
+def test_result_draws_text_prompt_when_not_supports_mouse():
+    scene = ResultScene(victory=True, supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert any("按 Enter 重新開始" in line for line in plain_lines(grid))
 
 
 # ---------------------------------------------------------------------------

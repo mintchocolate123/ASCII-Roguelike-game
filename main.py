@@ -121,7 +121,7 @@ class GameController:
         self.bridge: Bridge | None = None
         self.run: Run | None = None
         self.quit_requested = False
-        self.scene: Scene = LoadingScene(report)
+        self.scene: Scene = LoadingScene(report, supports_mouse=supports_mouse)
 
     def handle(self, actions) -> None:
         self.scene.handle(actions)
@@ -157,7 +157,7 @@ class GameController:
                 self.quit_requested = True
 
     def _to_title(self) -> None:
-        self.scene = TitleScene()
+        self.scene = TitleScene(supports_mouse=self.supports_mouse)
 
     def _start_new_run(self) -> None:
         self.bridge = Bridge(RULES_PATH)
@@ -167,14 +167,18 @@ class GameController:
 
     def _after_battle(self, battle: BattleScene) -> None:
         if battle.fatal_error is not None:
-            self.scene = ResultScene(victory=False, message="\n".join(battle.fatal_error.panel_lines()))
+            self.scene = ResultScene(
+                victory=False,
+                message="\n".join(battle.fatal_error.panel_lines()),
+                supports_mouse=self.supports_mouse,
+            )
             return
 
         player_view = self.bridge.player_view(battle.player)
         self.run.record_hp(player_view["hp"], player_view["max_hp"])
 
         if battle.result == "lose":
-            self.scene = ResultScene(victory=False)
+            self.scene = ResultScene(victory=False, supports_mouse=self.supports_mouse)
             return
 
         reward_pool = [c for c in self.db.cards.values() if c.get("in_reward_pool")]
@@ -190,12 +194,12 @@ class GameController:
     def _enter_current_stage(self) -> None:
         stage = self.run.current_stage
         if stage is None:
-            self.scene = ResultScene(victory=True)
+            self.scene = ResultScene(victory=True, supports_mouse=self.supports_mouse)
             return
         if stage["type"] == "battle":
             self._enter_battle(stage.get("tier"))
         else:  # "rest"
-            self.scene = RestScene(self.run)
+            self.scene = RestScene(self.run, supports_mouse=self.supports_mouse)
 
     def _enter_battle(self, tier: str | None) -> None:
         try:
@@ -211,10 +215,12 @@ class GameController:
                 supports_mouse=self.supports_mouse,
             )
         except ModCallError as exc:
-            self.scene = ResultScene(victory=False, message="\n".join(exc.panel_lines()))
+            self.scene = ResultScene(
+                victory=False, message="\n".join(exc.panel_lines()), supports_mouse=self.supports_mouse
+            )
             return
         except (KeyError, ValueError) as exc:
-            self.scene = ResultScene(victory=False, message=str(exc))
+            self.scene = ResultScene(victory=False, message=str(exc), supports_mouse=self.supports_mouse)
             return
         if self.run.max_hp is None:
             player_view = self.bridge.player_view(self.scene.player)

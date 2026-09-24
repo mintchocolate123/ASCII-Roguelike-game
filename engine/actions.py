@@ -75,6 +75,27 @@ class Skip:
     pass
 
 
+@dataclass(frozen=True)
+class ClickButton:
+    """點擊一個具名按鈕（title/loading/rest/result 用的「開始遊戲」「繼續」「重新開始」
+    「離開遊戲」等）。scene 只處理自己認得的名稱，收到別的畫面的按鈕名稱就直接忽略。
+
+    這樣即使兩個畫面的按鈕剛好落在同一個座標（不同畫面不會同時顯示，但 renderer 不知道
+    現在是哪個 scene），也不會誤觸不相干的動作——renderer 只負責照座標回報名稱，
+    要不要理會由 scene 自己判斷。"""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class HoverButton:
+    """滑鼠是否停留在某個具名按鈕上方，用來決定要不要顯示成 highlight 色。
+    跟 ClickButton 一樣用名稱區分，scene 只理會自己的按鈕名稱。"""
+
+    name: str
+    active: bool
+
+
 Action = Union[
     PlayCard,
     EndTurn,
@@ -88,4 +109,6 @@ Action = Union[
     HoverEndTurn,
     HoverSkip,
     Skip,
+    ClickButton,
+    HoverButton,
 ]

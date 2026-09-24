@@ -9,9 +9,11 @@ from .. import layout, palette
 from ..actions import (
     Action,
     Back,
+    ClickButton,
     ClickCard,
     Confirm,
     EndTurn,
+    HoverButton,
     HoverEndTurn,
     HoverSkip,
     Inspect,
@@ -38,6 +40,41 @@ _KEY_TO_ACTION = {
     pygame.K_KP_ENTER: Confirm,
     pygame.K_F5: Reload,
     pygame.K_ESCAPE: Back,
+}
+
+# title／loading／rest／result 共用的具名按鈕，(x, y, w, h)。座標可能跟 battle／reward 的
+# 區域重疊也沒關係：這些畫面不會同時顯示，收到的 scene 只認自己的名稱，其他一律忽略。
+_MENU_BUTTON_RECTS: dict[str, tuple[int, int, int, int]] = {
+    "title_start": (
+        layout.TITLE_START_BUTTON_X,
+        layout.TITLE_START_BUTTON_Y,
+        layout.MENU_BUTTON_WIDTH,
+        layout.MENU_BUTTON_HEIGHT,
+    ),
+    "loading_continue": (
+        layout.LOADING_CONTINUE_BUTTON_X,
+        layout.LOADING_CONTINUE_BUTTON_Y,
+        layout.MENU_BUTTON_WIDTH,
+        layout.MENU_BUTTON_HEIGHT,
+    ),
+    "rest_continue": (
+        layout.REST_CONTINUE_BUTTON_X,
+        layout.REST_CONTINUE_BUTTON_Y,
+        layout.MENU_BUTTON_WIDTH,
+        layout.MENU_BUTTON_HEIGHT,
+    ),
+    "result_restart": (
+        layout.RESULT_RESTART_BUTTON_X,
+        layout.RESULT_BUTTON_ROW,
+        layout.MENU_BUTTON_WIDTH,
+        layout.MENU_BUTTON_HEIGHT,
+    ),
+    "result_quit": (
+        layout.RESULT_QUIT_BUTTON_X,
+        layout.RESULT_BUTTON_ROW,
+        layout.MENU_BUTTON_WIDTH,
+        layout.MENU_BUTTON_HEIGHT,
+    ),
 }
 
 
@@ -82,6 +119,7 @@ class PygameRenderer(Renderer):
         self._hover_index: int | None = None
         self._hover_end_turn = False
         self._hover_skip = False
+        self._hovered_menu_buttons: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
     # Renderer 介面
@@ -117,6 +155,8 @@ class PygameRenderer(Renderer):
                 elif self._is_over_skip_button(event.pos):
                     actions.append(Skip())
                 else:
+                    for name in self._menu_buttons_at(event.pos):
+                        actions.append(ClickButton(name))
                     actions.append(ClickCard(self._click_card_index_at(event.pos)))
             elif event.type == pygame.MOUSEMOTION:
                 index = self._card_index_at(event.pos)
@@ -131,6 +171,13 @@ class PygameRenderer(Renderer):
                 if over_skip != self._hover_skip:
                     self._hover_skip = over_skip
                     actions.append(HoverSkip(over_skip))
+                hovered_menu = self._menu_buttons_at(event.pos)
+                if hovered_menu != self._hovered_menu_buttons:
+                    for name in self._hovered_menu_buttons - hovered_menu:
+                        actions.append(HoverButton(name, False))
+                    for name in hovered_menu - self._hovered_menu_buttons:
+                        actions.append(HoverButton(name, True))
+                    self._hovered_menu_buttons = hovered_menu
         return actions
 
     def supports_animation(self) -> bool:
@@ -196,6 +243,19 @@ class PygameRenderer(Renderer):
             if start <= col < start + layout.CARD_WIDTH:
                 return i
         return None
+
+    @staticmethod
+    def _menu_buttons_at(pos: tuple[int, int]) -> frozenset[str]:
+        """回傳目前座標命中的具名按鈕集合；正常只會有 0 或 1 個，title／loading／rest 的
+        按鈕座標刻意相同時會有多個，各自的 scene 只認自己的名稱。"""
+        px, py = pos
+        col = px // CELL_PIXEL_WIDTH
+        row = py // CELL_PIXEL_HEIGHT
+        return frozenset(
+            name
+            for name, (bx, by, bw, bh) in _MENU_BUTTON_RECTS.items()
+            if bx <= col < bx + bw and by <= row < by + bh
+        )
 
     @staticmethod
     def _is_over_end_turn_button(pos: tuple[int, int]) -> bool:

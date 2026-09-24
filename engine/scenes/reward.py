@@ -5,7 +5,7 @@ import random
 
 from .. import layout
 from ..actions import Action, Back, Choose, ClickCard, HoverSkip, PlayCard, Skip
-from ..draw import draw_box, draw_card, draw_text, text_width
+from ..draw import draw_button, draw_card, draw_text, text_width
 from ..grid import Grid
 from ..run import Run
 from .scene import Scene
@@ -97,11 +97,13 @@ class RewardScene(Scene):
             draw_text(grid, hint_x, layout.REWARD_HINT_ROW, hint, fg="dim")
 
     def _draw_skip_button(self, grid: Grid) -> None:
-        x, y = layout.REWARD_SKIP_BUTTON_X, layout.REWARD_SKIP_BUTTON_Y
-        w, h = layout.REWARD_SKIP_BUTTON_WIDTH, layout.REWARD_SKIP_BUTTON_HEIGHT
-        fg = "highlight" if self.skip_hovered else "frame"
-        draw_box(grid, x, y, w, h, fg=fg, style="double")
-        label = "跳過"
-        draw_text(grid, x + max(1, (w - text_width(label)) // 2), y + h // 2 - 1, label, fg=fg)
-        key_hint = "[B]"
-        draw_text(grid, x + max(1, (w - text_width(key_hint)) // 2), y + h // 2 + 1, key_hint, fg=fg)
+        draw_button(
+            grid,
+            layout.REWARD_SKIP_BUTTON_X,
+            layout.REWARD_SKIP_BUTTON_Y,
+            layout.REWARD_SKIP_BUTTON_WIDTH,
+            layout.REWARD_SKIP_BUTTON_HEIGHT,
+            "跳過",
+            key_hint="[B]",
+            hovered=self.skip_hovered,
+        )
