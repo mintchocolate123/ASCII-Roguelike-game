@@ -200,6 +200,25 @@ pygame 版沒有操作提示列，見下方「操作提示」一節。手牌之�
 - 終端機版：置中顯示目前可用的按鍵提示，使用 dim 色。
 - pygame 版：不畫這一列。滑鼠停留在卡牌或按鈕上就會看到提示，不需要額外的文字說明。
 
+### 獎勵畫面（reward scene，列 8 到 23）
+
+- 三張獎勵卡置中排列，欄位由 `layout.reward_card_x(i)` 決定（固定以 3 張卡置中計算，
+  跟這次實際抽到幾張無關，滑鼠點擊判定才會永遠對得上畫面）；卡片本身跟手牌同樣式（寬 12、
+  高 10，最多顯示 6 行描述）。標題在 `layout.REWARD_TITLE_ROW`（卡片上方 3 列），沿用手牌
+  的卡片列高（列 11 到 20），跟手牌的列 21 到 30 不重疊，避免滑鼠點擊判定搞混兩個畫面。
+- 跳過按鈕：緊接在第 3 張卡右邊（`layout.REWARD_SKIP_BUTTON_X`），尺寸跟結束回合按鈕相同
+  （寬 10、高 10、雙線框），置中顯示「跳過」與 `[B]`。平常框線用 frame 色，滑鼠移上去用
+  highlight 色，點擊送出 `Skip()`——不管有沒有選取中的卡，點下去一律直接跳過。
+- 三張卡兩段式點擊（選取狀態放在 `RewardScene`，不在 renderer；終端機沒有滑鼠事件，行為完全
+  不變）：第一下選取——卡片整張上移一格（`layout.SELECTED_CARD_ROW_OFFSET`），框線改用
+  highlight 色；對已經選取的那張卡再點一次才確定加入牌組。點另一張卡改成選取那一張；點空白處
+  （`ClickCard(None)`）取消選取。Esc（`Back()`）：如果目前有選取中的卡，只取消選取；沒有選取
+  中的卡時維持原本「跳過」的行為（終端機的 `b` 鍵一律走這一支，selected_index 永遠是
+  `None`，行為跟改版前完全一樣）。
+- 數字鍵 1 到 3（`PlayCard`／`Choose`）維持原本行為：一律直接選取該卡加入牌組，不走兩段式。
+- pygame 版：不畫「[1-3] 選擇這張卡　[B] 跳過」的文字提示（`layout.REWARD_HINT_ROW`），滑鼠
+  停留在按鈕上就會看到提示。終端機版保留文字提示。
+
 ## 卡牌描述（engine/cardtext.py）
 
 - CardDef 的 `description` 是選填欄位，可使用佔位符 `{damage}`、`{hits}`、`{block}`、`{heal}`、`{draw}`、`{energy}`、`{self_damage}`。引擎會用卡牌資料的值代入。
@@ -225,22 +244,24 @@ class Renderer:
     def supports_animation(self) -> bool: ...
 ```
 
-- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()`、`Quit()`、`Inspect(index)`、`ClickCard(index)` 和 `HoverEndTurn(active)`。`Inspect(None)` 表示結束檢視。
+- Action 類型包括 `PlayCard(index)`、`EndTurn()`、`Choose(index)`、`Confirm()`、`Back()`、`Reload()`、`Quit()`、`Inspect(index)`、`ClickCard(index)`、`HoverEndTurn(active)`、`Skip()` 和 `HoverSkip(active)`。`Inspect(None)` 表示結束檢視。
 - `ClickCard(index)` 跟 `PlayCard(index)` 不同：renderer 只負責回報「滑鼠點到第幾張卡」（點空白處是
-  `ClickCard(None)`），要不要出牌、要不要進入選取狀態一律由 battle scene 決定（兩段式點擊的狀態
-  存在 scene 裡，不在 renderer）。`PlayCard(index)` 只由數字鍵觸發，一律直接出牌。
+  `ClickCard(None)`），要不要出牌／加入牌組、要不要進入選取狀態一律由 scene 決定（兩段式點擊的
+  狀態存在 scene 裡，不在 renderer；battle scene 跟 reward scene 都用這一組動作）。`PlayCard(index)`／
+  `Choose(index)` 只由數字鍵觸發，一律直接生效，不走兩段式。
 - pygame 版的輸入對應：
-  - 按鍵 1 到 7 對應 PlayCard（一律直接出牌）或 Choose（reward 等非戰鬥畫面選單）
-  - 滑鼠點擊卡牌區域對應 `ClickCard(i)`，點空白處對應 `ClickCard(None)`
+  - 按鍵 1 到 7（battle）或 1 到 3（reward）對應 PlayCard 或 Choose，一律直接生效
+  - 滑鼠點擊卡牌區域（手牌或獎勵卡）對應 `ClickCard(i)`，點空白處對應 `ClickCard(None)`
   - 滑鼠移入卡牌區域對應 `Inspect(i)`，移出所有卡牌時對應 `Inspect(None)`
   - 滑鼠點擊結束回合按鈕對應 EndTurn；移入/移出按鈕對應 `HoverEndTurn(True)`／`HoverEndTurn(False)`
+  - 滑鼠點擊獎勵畫面的跳過按鈕對應 `Skip()`；移入/移出按鈕對應 `HoverSkip(True)`／`HoverSkip(False)`
   - E 對應 EndTurn
   - Enter 對應 Confirm
   - F5 對應 Reload
   - Esc 對應 Back
 - 終端機版輸入 `?2` 對應 `Inspect(1)`，輸入 `?` 對應 `Inspect(None)`。終端機版不會送出
-  `ClickCard`／`HoverEndTurn`（沒有滑鼠事件），所以兩段式選取與按鈕變色都不會發生，操作跟原本
-  完全一樣。
+  `ClickCard`／`HoverEndTurn`／`Skip`／`HoverSkip`（沒有滑鼠事件），所以兩段式選取與按鈕變色都
+  不會發生，操作跟原本完全一樣；獎勵畫面的 `b` 鍵維持原本「跳過」的行為。
 - pygame 版使用 `(char, fg, bg)` 作為 key 快取 `font.render()` 結果，只有 grid dirty 時才重畫。
 - 終端機版使用 ANSI 色碼整頁輸出；`poll_actions()` 以 `input()` 阻塞讀取，並把輸入解析成 Action。`supports_animation()` 回傳 False。
 - 終端機版啟動時要把 stdout 設為 UTF-8，以避免 Windows cp950 亂碼。終端機寬度小於 96 欄或高度小於 33 列時，顯示中文提示要求使用者放大視窗，不要輸出跑版的畫面。

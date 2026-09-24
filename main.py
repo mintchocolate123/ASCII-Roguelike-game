@@ -179,7 +179,7 @@ class GameController:
 
         reward_pool = [c for c in self.db.cards.values() if c.get("in_reward_pool")]
         if reward_pool:
-            self.scene = RewardScene(self.run, reward_pool)
+            self.scene = RewardScene(self.run, reward_pool, supports_mouse=self.supports_mouse)
         else:
             self._after_stage()
 

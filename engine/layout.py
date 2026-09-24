@@ -69,3 +69,26 @@ END_TURN_BUTTON_Y = HAND_ROW_TOP
 
 # --- 操作提示（列 31）。終端機版才會畫；pygame 版有結束回合按鈕可以點，不需要文字提示。---
 HINT_ROW = 31
+
+# --- 獎勵畫面：三張卡置中，列 11 到 20（跟手牌的列 21 到 30 不重疊，
+#     滑鼠點擊判定才不會被搞混，不管目前是戰鬥還是獎勵畫面）。 ---
+REWARD_CARD_COUNT = 3
+REWARD_CARD_GAP = 3
+REWARD_ROW_TOP = 11
+REWARD_TITLE_ROW = REWARD_ROW_TOP - 3
+REWARD_HINT_ROW = REWARD_ROW_TOP + CARD_HEIGHT + 2
+
+
+def reward_card_x(index: int) -> int:
+    """第 index 張獎勵卡（從 0 開始）的左上角欄座標。位置固定（永遠以 3 張卡置中計算），
+    跟這次實際抽到幾張卡無關，這樣滑鼠點擊判定才會永遠對得上畫面上的位置。"""
+    total_width = REWARD_CARD_COUNT * CARD_WIDTH + (REWARD_CARD_COUNT - 1) * REWARD_CARD_GAP
+    start_x = max(0, (SCREEN_WIDTH - total_width) // 2)
+    return start_x + index * (CARD_WIDTH + REWARD_CARD_GAP)
+
+
+# 跳過按鈕：沿用結束回合按鈕的尺寸，固定接在獎勵卡版面的右邊。
+REWARD_SKIP_BUTTON_WIDTH = END_TURN_BUTTON_WIDTH
+REWARD_SKIP_BUTTON_HEIGHT = END_TURN_BUTTON_HEIGHT
+REWARD_SKIP_BUTTON_X = reward_card_x(REWARD_CARD_COUNT - 1) + CARD_WIDTH + REWARD_CARD_GAP
+REWARD_SKIP_BUTTON_Y = REWARD_ROW_TOP

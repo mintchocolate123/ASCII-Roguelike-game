@@ -47,9 +47,9 @@ class Inspect:
 
 @dataclass(frozen=True)
 class ClickCard:
-    """滑鼠點擊手牌區域（點到卡牌是索引，點到空白處是 None）。
-    跟 PlayCard 不同：scene 會用兩段式（先選取、再點一次才出牌）處理，
-    數字鍵仍然走 PlayCard，一次就直接出牌。"""
+    """滑鼠點擊卡牌區域（點到卡牌是索引，點到空白處是 None）。手牌、獎勵畫面都會用到。
+    跟 PlayCard 不同：scene 會用兩段式（先選取、再點一次才確定）處理，
+    數字鍵仍然走 PlayCard/Choose，一次就直接生效。"""
 
     index: int | None
 
@@ -61,6 +61,31 @@ class HoverEndTurn:
     active: bool
 
 
+@dataclass(frozen=True)
+class HoverSkip:
+    """滑鼠是否正停在獎勵畫面的跳過按鈕上方，用來決定按鈕要不要顯示成 highlight 色。"""
+
+    active: bool
+
+
+@dataclass(frozen=True)
+class Skip:
+    """點擊獎勵畫面的跳過按鈕：一律直接跳過，不管目前有沒有選取中的卡。"""
+
+    pass
+
+
 Action = Union[
-    PlayCard, EndTurn, Choose, Confirm, Back, Reload, Quit, Inspect, ClickCard, HoverEndTurn
+    PlayCard,
+    EndTurn,
+    Choose,
+    Confirm,
+    Back,
+    Reload,
+    Quit,
+    Inspect,
+    ClickCard,
+    HoverEndTurn,
+    HoverSkip,
+    Skip,
 ]

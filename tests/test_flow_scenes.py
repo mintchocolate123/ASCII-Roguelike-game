@@ -1,4 +1,5 @@
-from engine.actions import Back, Choose, Confirm, PlayCard
+from engine import layout
+from engine.actions import Back, Choose, ClickCard, Confirm, HoverSkip, PlayCard, Skip
 from engine.grid import Grid, plain_lines
 from engine.mod.report import LoadReport
 from engine.run import Run
@@ -210,3 +211,157 @@ def test_reward_scene_draws_card_names():
     scene.draw(grid)
     lines = plain_lines(grid)
     assert any(pool[0]["name"] in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# RewardScene：滑鼠兩段式點擊（選取狀態放在 scene，不在 renderer）
+# ---------------------------------------------------------------------------
+
+
+def test_reward_click_card_first_time_selects_without_choosing():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index == 0
+    assert scene.finished is False
+    assert len(run.deck) == 0
+
+
+def test_reward_click_card_second_time_confirms_choice():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    chosen_card = scene.options[0]
+    scene.handle([ClickCard(0)])
+    scene.handle([ClickCard(0)])
+    assert scene.finished is True
+    assert scene.selected_index is None
+    assert run.deck[-1]["id"] == chosen_card["id"]
+
+
+def test_reward_click_different_card_switches_selection():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index == 0
+    scene.handle([ClickCard(1)])
+    assert scene.selected_index == 1
+    assert scene.finished is False
+
+
+def test_reward_click_blank_deselects():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])
+    scene.handle([ClickCard(None)])
+    assert scene.selected_index is None
+    assert scene.finished is False
+
+
+def test_reward_esc_deselects_without_skipping_when_something_selected():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])
+    scene.handle([Back()])
+    assert scene.selected_index is None
+    assert scene.finished is False  # 有選取中的卡時，Esc 只取消選取，不會直接跳過
+    assert scene.skipped is False
+
+
+def test_reward_esc_skips_when_nothing_selected():
+    """終端機版沒有滑鼠、selected_index 永遠是 None，Esc（對應 b 鍵）維持原本「跳過」的行為。"""
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([Back()])
+    assert scene.finished is True
+    assert scene.skipped is True
+
+
+def test_reward_number_key_ignores_pending_mouse_selection():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    chosen_card = scene.options[2]
+    scene.handle([ClickCard(0)])  # 滑鼠選取了第 0 張
+    scene.handle([PlayCard(2)])  # 數字鍵 3：直接選第 2 張，不管滑鼠選取狀態
+    assert scene.finished is True
+    assert run.deck[-1]["id"] == chosen_card["id"]
+
+
+# ---------------------------------------------------------------------------
+# RewardScene：跳過按鈕
+# ---------------------------------------------------------------------------
+
+
+def test_reward_hover_skip_sets_flag():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    assert scene.skip_hovered is False
+    scene.handle([HoverSkip(True)])
+    assert scene.skip_hovered is True
+    scene.handle([HoverSkip(False)])
+    assert scene.skip_hovered is False
+
+
+def test_reward_skip_action_always_skips_even_with_selection():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])  # 先選取一張
+    scene.handle([Skip()])  # 跳過按鈕：不管選取狀態，一律直接跳過
+    assert scene.finished is True
+    assert scene.skipped is True
+    assert len(run.deck) == 0
+
+
+def test_reward_draw_skip_button_exists_and_highlights_on_hover():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.REWARD_SKIP_BUTTON_X, layout.REWARD_SKIP_BUTTON_Y).char == "╔"
+    assert grid.get(layout.REWARD_SKIP_BUTTON_X, layout.REWARD_SKIP_BUTTON_Y).fg == "frame"
+
+    scene.handle([HoverSkip(True)])
+    grid2 = Grid()
+    scene.draw(grid2)
+    assert grid2.get(layout.REWARD_SKIP_BUTTON_X, layout.REWARD_SKIP_BUTTON_Y).fg == "highlight"
+
+
+# ---------------------------------------------------------------------------
+# RewardScene：選取的卡片上移一格、提示列跟 supports_mouse 掛勾
+# ---------------------------------------------------------------------------
+
+
+def test_reward_draw_shifts_selected_card_up_by_one_row():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    scene.handle([ClickCard(0)])
+
+    grid = Grid()
+    scene.draw(grid)
+    x = layout.reward_card_x(0)
+    assert grid.get(x, layout.REWARD_ROW_TOP - 1).char == "╔"
+    assert grid.get(x, layout.REWARD_ROW_TOP).char != "╔"
+
+
+def test_reward_draw_unselected_card_stays_at_normal_row():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool())
+    grid = Grid()
+    scene.draw(grid)
+    x = layout.reward_card_x(0)
+    assert grid.get(x, layout.REWARD_ROW_TOP).char == "╔"
+
+
+def test_reward_hint_hidden_when_supports_mouse():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool(), supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert plain_lines(grid)[layout.REWARD_HINT_ROW].strip() == ""
+
+
+def test_reward_hint_shown_when_not_supports_mouse():
+    run = Run(stages=[], deck=[])
+    scene = RewardScene(run, _reward_pool(), supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert "跳過" in plain_lines(grid)[layout.REWARD_HINT_ROW]

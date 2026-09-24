@@ -6,7 +6,20 @@ from pathlib import Path
 import pygame
 
 from .. import layout, palette
-from ..actions import Action, Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Quit, Reload
+from ..actions import (
+    Action,
+    Back,
+    ClickCard,
+    Confirm,
+    EndTurn,
+    HoverEndTurn,
+    HoverSkip,
+    Inspect,
+    PlayCard,
+    Quit,
+    Reload,
+    Skip,
+)
 from ..grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH, HEIGHT as GRID_HEIGHT, WIDTH as GRID_WIDTH, Grid
 from .base import Renderer
 
@@ -68,6 +81,7 @@ class PygameRenderer(Renderer):
         self._glyph_cache: dict[tuple[str, str, str | None], pygame.Surface] = {}
         self._hover_index: int | None = None
         self._hover_end_turn = False
+        self._hover_skip = False
 
     # ------------------------------------------------------------------
     # Renderer 介面
@@ -100,17 +114,23 @@ class PygameRenderer(Renderer):
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if self._is_over_end_turn_button(event.pos):
                     actions.append(EndTurn())
+                elif self._is_over_skip_button(event.pos):
+                    actions.append(Skip())
                 else:
-                    actions.append(ClickCard(self._card_index_at(event.pos)))
+                    actions.append(ClickCard(self._click_card_index_at(event.pos)))
             elif event.type == pygame.MOUSEMOTION:
                 index = self._card_index_at(event.pos)
                 if index != self._hover_index:
                     self._hover_index = index
                     actions.append(Inspect(index))
-                over_button = self._is_over_end_turn_button(event.pos)
-                if over_button != self._hover_end_turn:
-                    self._hover_end_turn = over_button
-                    actions.append(HoverEndTurn(over_button))
+                over_end_turn = self._is_over_end_turn_button(event.pos)
+                if over_end_turn != self._hover_end_turn:
+                    self._hover_end_turn = over_end_turn
+                    actions.append(HoverEndTurn(over_end_turn))
+                over_skip = self._is_over_skip_button(event.pos)
+                if over_skip != self._hover_skip:
+                    self._hover_skip = over_skip
+                    actions.append(HoverSkip(over_skip))
         return actions
 
     def supports_animation(self) -> bool:
@@ -144,6 +164,13 @@ class PygameRenderer(Renderer):
         action_cls = _KEY_TO_ACTION.get(event.key)
         return action_cls() if action_cls is not None else None
 
+    def _click_card_index_at(self, pos: tuple[int, int]) -> int | None:
+        """手牌跟獎勵卡共用 ClickCard：兩者的列範圍不重疊，最多只有一邊會命中。"""
+        index = self._card_index_at(pos)
+        if index is not None:
+            return index
+        return self._reward_card_index_at(pos)
+
     @staticmethod
     def _card_index_at(pos: tuple[int, int]) -> int | None:
         px, py = pos
@@ -158,6 +185,19 @@ class PygameRenderer(Renderer):
         return None
 
     @staticmethod
+    def _reward_card_index_at(pos: tuple[int, int]) -> int | None:
+        px, py = pos
+        col = px // CELL_PIXEL_WIDTH
+        row = py // CELL_PIXEL_HEIGHT
+        if not (layout.REWARD_ROW_TOP <= row < layout.REWARD_ROW_TOP + layout.CARD_HEIGHT):
+            return None
+        for i in range(layout.REWARD_CARD_COUNT):
+            start = layout.reward_card_x(i)
+            if start <= col < start + layout.CARD_WIDTH:
+                return i
+        return None
+
+    @staticmethod
     def _is_over_end_turn_button(pos: tuple[int, int]) -> bool:
         px, py = pos
         col = px // CELL_PIXEL_WIDTH
@@ -165,4 +205,14 @@ class PygameRenderer(Renderer):
         return (
             layout.END_TURN_BUTTON_X <= col < layout.END_TURN_BUTTON_X + layout.END_TURN_BUTTON_WIDTH
             and layout.END_TURN_BUTTON_Y <= row < layout.END_TURN_BUTTON_Y + layout.END_TURN_BUTTON_HEIGHT
+        )
+
+    @staticmethod
+    def _is_over_skip_button(pos: tuple[int, int]) -> bool:
+        px, py = pos
+        col = px // CELL_PIXEL_WIDTH
+        row = py // CELL_PIXEL_HEIGHT
+        return (
+            layout.REWARD_SKIP_BUTTON_X <= col < layout.REWARD_SKIP_BUTTON_X + layout.REWARD_SKIP_BUTTON_WIDTH
+            and layout.REWARD_SKIP_BUTTON_Y <= row < layout.REWARD_SKIP_BUTTON_Y + layout.REWARD_SKIP_BUTTON_HEIGHT
         )

@@ -93,6 +93,7 @@ def test_win_battle_goes_to_reward_then_next_battle_on_skip():
 
     _play_through_battle(controller)
     assert isinstance(controller.scene, RewardScene)
+    assert controller.scene.supports_mouse == controller.supports_mouse  # 有正確往下傳
 
     controller.handle([Back()])  # 跳過獎勵
     assert isinstance(controller.scene, BattleScene)

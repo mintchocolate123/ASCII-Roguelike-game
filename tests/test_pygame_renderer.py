@@ -15,10 +15,12 @@ from engine.actions import (  # noqa: E402
     Confirm,
     EndTurn,
     HoverEndTurn,
+    HoverSkip,
     Inspect,
     PlayCard,
     Quit,
     Reload,
+    Skip,
 )
 from engine.grid import Grid  # noqa: E402
 from engine.render.pygame_renderer import FontLoadError, PygameRenderer  # noqa: E402
@@ -224,3 +226,67 @@ def test_mouse_move_within_same_card_does_not_repeat_inspect(renderer):
     second = renderer.poll_actions()
     assert first == [Inspect(1)]
     assert second == []  # 還在同一張卡片上，不用重複送出
+
+
+# ---------------------------------------------------------------------------
+# 獎勵畫面：三張獎勵卡點擊、跳過按鈕
+# ---------------------------------------------------------------------------
+
+
+def _reward_card_pixel(index: int) -> tuple[int, int]:
+    from engine import layout
+    from engine.grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH
+
+    col = layout.reward_card_x(index) + 1
+    row = layout.REWARD_ROW_TOP + 1
+    return col * CELL_PIXEL_WIDTH, row * CELL_PIXEL_HEIGHT
+
+
+def _skip_button_pixel() -> tuple[int, int]:
+    from engine import layout
+    from engine.grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH
+
+    col = layout.REWARD_SKIP_BUTTON_X + 1
+    row = layout.REWARD_SKIP_BUTTON_Y + 1
+    return col * CELL_PIXEL_WIDTH, row * CELL_PIXEL_HEIGHT
+
+
+def test_click_on_reward_card_emits_click_card(renderer):
+    pos = _reward_card_pixel(1)
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    assert renderer.poll_actions() == [ClickCard(1)]
+
+
+def test_reward_card_row_range_does_not_collide_with_hand_row():
+    """獎勵卡（列 11-20）跟手牌（列 21-30）不重疊，命中判定不會搞混。"""
+    from engine import layout
+
+    assert layout.REWARD_ROW_TOP + layout.CARD_HEIGHT - 1 < layout.HAND_ROW_TOP
+
+
+def test_click_on_skip_button_emits_skip(renderer):
+    pos = _skip_button_pixel()
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    assert renderer.poll_actions() == [Skip()]
+
+
+def test_mouse_move_into_skip_button_emits_hover_true(renderer):
+    pos = _skip_button_pixel()
+    _post(pygame.MOUSEMOTION, pos=pos)
+    assert renderer.poll_actions() == [HoverSkip(True)]
+
+
+def test_mouse_move_out_of_skip_button_emits_hover_false(renderer):
+    pos = _skip_button_pixel()
+    _post(pygame.MOUSEMOTION, pos=pos)
+    renderer.poll_actions()
+    _post(pygame.MOUSEMOTION, pos=(5, 5))
+    assert renderer.poll_actions() == [HoverSkip(False)]
+
+
+def test_hover_skip_and_hover_end_turn_are_independent(renderer):
+    """兩個按鈕的列範圍不重疊，移到跳過按鈕不該誤觸結束回合按鈕的 hover。"""
+    pos = _skip_button_pixel()
+    _post(pygame.MOUSEMOTION, pos=pos)
+    actions = renderer.poll_actions()
+    assert actions == [HoverSkip(True)]
