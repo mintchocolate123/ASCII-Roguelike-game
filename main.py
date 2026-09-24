@@ -228,6 +228,7 @@ class GameController:
 
         self.db = new_db
         self.report = new_report
+        self.run.refresh_deck(self.db.cards)  # 牌組裡每張卡都換成重新載入後的最新版本
         try:
             new_scene = _build_battle(
                 self.bridge,

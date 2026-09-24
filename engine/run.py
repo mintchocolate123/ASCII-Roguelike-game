@@ -40,6 +40,11 @@ class Run:
     def advance(self) -> None:
         self.stage_index += 1
 
+    def refresh_deck(self, cards: dict[str, dict]) -> None:
+        """F5 熱重載用：牌組裡每張卡都換成資料庫裡目前的版本（數值、描述都跟著更新），
+        但保留牌組原本的張數與順序，包含戰鬥過程中選到的獎勵卡。"""
+        self.deck = refresh_deck(self.deck, cards)
+
     def record_hp(self, hp: int, max_hp: int) -> None:
         self.hp = hp
         self.max_hp = max_hp
@@ -52,6 +57,19 @@ class Run:
         healed_amount = healed_target - self.hp
         self.hp = healed_target
         return healed_amount
+
+
+def refresh_deck(deck: list[dict], cards: dict[str, dict]) -> list[dict]:
+    """用最新的卡牌資料庫更新一份牌組：保留牌組原本的張數與順序，
+    但每張卡片換成資料庫裡目前的版本（數值、描述都是最新的）。
+    找不到對應 full_id 時保留原本的卡片內容，不會憑空消失。
+    """
+    refreshed: list[dict] = []
+    for card in deck:
+        full_id = card.get("full_id")
+        fresh = cards.get(full_id) if full_id else None
+        refreshed.append(dict(fresh) if fresh is not None else dict(card))
+    return refreshed
 
 
 def build_starting_deck(cards: dict[str, dict]) -> list[dict]:
