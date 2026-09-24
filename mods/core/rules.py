@@ -1,8 +1,8 @@
 """core 的遊戲規則：第一堂課的練習目標。
 
 這是一個普通的 Python 檔案，引擎會呼叫這裡的函式，名稱與回傳格式固定（見 CLAUDE.md）。
-第一版只處理 damage、block、heal 三個欄位；hits、draw、energy、self_damage
-留給學生當課後作業自己補上。
+支援 damage（可搭配 hits 重複多次，每次分別計算護盾吸收）、block、heal、draw、energy、
+self_damage（不受玩家自己的護盾影響）。
 
 effect 欄位（第二階段）：資料組合不出來的效果，mod 會在自己的 scripts/*.py 裡用一個 class
 實作，並用 @register_effect() 註冊進 engine.mod.registry。這裡只需要依卡牌的 effect 完整 id
@@ -87,16 +87,30 @@ def play_card(player, enemy, hand_index):
             messages.append(effect_cls().apply(player, enemy, card))
     if "damage" in card:
         dealt = card["damage"]
-        absorbed = min(enemy["block"], dealt)
-        enemy["block"] -= absorbed
-        enemy["hp"] = max(0, enemy["hp"] - (dealt - absorbed))
-        messages.append(f"造成 {dealt} 點傷害")
+        hits = card.get("hits", 1)
+        for _ in range(hits):
+            absorbed = min(enemy["block"], dealt)
+            enemy["block"] -= absorbed
+            enemy["hp"] = max(0, enemy["hp"] - (dealt - absorbed))
+        if "hits" in card:
+            messages.append(f"造成 {dealt} 點傷害，重複 {hits} 次")
+        else:
+            messages.append(f"造成 {dealt} 點傷害")
     if "block" in card:
         player["block"] += card["block"]
         messages.append(f"獲得 {card['block']} 點護盾")
     if "heal" in card:
         player["hp"] = min(player["max_hp"], player["hp"] + card["heal"])
         messages.append(f"回復 {card['heal']} 點生命")
+    if "draw" in card:
+        _draw_cards(player, card["draw"])
+        messages.append(f"抽 {card['draw']} 張牌")
+    if "energy" in card:
+        player["energy"] += card["energy"]
+        messages.append(f"獲得 {card['energy']} 點能量")
+    if "self_damage" in card:
+        player["hp"] = max(0, player["hp"] - card["self_damage"])
+        messages.append(f"失去 {card['self_damage']} 點生命")
 
     player["discard"].append(card)
     if not messages:

@@ -196,9 +196,12 @@ class BattleScene(Scene):
         self.turn += 1
         self._enter_player_turn(prev_action_index=prev_action_index)
 
-    def _trigger_fx(self, before_player: dict, before_enemy: dict, *, is_enemy_attack: bool = False) -> None:
+    def _trigger_fx(
+        self, before_player: dict, before_enemy: dict, *, is_enemy_attack: bool = False, card: dict | None = None
+    ) -> None:
         """比較呼叫前後的 view，自動排入對應的效果。終端機版／--no-fx（supports_animation=False）
-        直接略過，不會排入任何效果。"""
+        直接略過，不會排入任何效果。card 是這次出的牌（只有 _play_card 會傳），用來判斷是不是
+        多段攻擊（hits > 1），不是數值變化，直接從卡牌資料判斷即可，不需要 rules.py 配合。"""
         if not self.supports_animation:
             return
         after_player = self.bridge.player_view(self.player)
@@ -207,8 +210,20 @@ class BattleScene(Scene):
         for kind in diff_triggers(before_player, after_player, before_enemy, after_enemy):
             self.fx.trigger(kind)
 
-        for origin, amount, color in diff_damage_numbers(before_player, after_player, before_enemy, after_enemy):
-            self.fx.spawn_number(amount, color, origin)
+        hits = card.get("hits") if card else None
+        if hits and hits > 1:
+            # 多段攻擊：不彈一個總和數字，改成把「這次對敵人造成的總傷害（扣血 + 護盾吸收）」
+            # 平均拆成 hits 份，依序間隔短暫時間彈出，最後一份補上除不盡的餘數，統一用 hp 色。
+            # 玩家這邊（例如 self_damage）的數字維持原本一次到位的邏輯，不受影響。
+            hp_lost = max(0, before_enemy.get("hp", 0) - after_enemy.get("hp", 0))
+            block_absorbed = max(0, before_enemy.get("block", 0) - after_enemy.get("block", 0))
+            self.fx.spawn_staggered_numbers(hp_lost + block_absorbed, hits, "hp", "enemy")
+            for origin, amount, color in diff_damage_numbers(before_player, after_player, before_enemy, after_enemy):
+                if origin != "enemy":
+                    self.fx.spawn_number(amount, color, origin)
+        else:
+            for origin, amount, color in diff_damage_numbers(before_player, after_player, before_enemy, after_enemy):
+                self.fx.spawn_number(amount, color, origin)
 
         for origin, before, after in (("player", before_player, after_player), ("enemy", before_enemy, after_enemy)):
             self.fx.start_hp_lag(origin, before.get("hp", 0), after.get("hp", 0))
@@ -344,7 +359,7 @@ class BattleScene(Scene):
             layout.SELECTED_CARD_ROW_OFFSET if self.selected_index == index else 0
         )
         self.selected_index = None
-        self._trigger_fx(before_player, before_enemy)
+        self._trigger_fx(before_player, before_enemy, card=card)
 
         if self.supports_animation:
             # 出牌飛出：不是數值變化，直接明確呼叫，記下這張卡原本畫在畫面上的位置跟尺寸；
@@ -475,9 +490,11 @@ class BattleScene(Scene):
         return f">> 準備防禦 {value} <<"
 
     def _draw_damage_numbers(self, grid: Grid, origin: str, x: int, y: int) -> None:
-        """畫出從 (x, y) 往上飄的傷害數字：扣血用 hp 色，被護盾吸收的量用 block 色。"""
-        for i, number in enumerate(self.fx.numbers_for(origin)):
-            draw_text(grid, x + i * 5, y + number.row_offset, f"-{number.amount}", fg=number.display_color)
+        """畫出從 (x, y) 往上飄的傷害數字：扣血用 hp 色，被護盾吸收的量用 block 色。水平排列用
+        number.slot（固定順位），不是清單索引，這樣多段攻擊依序彈出時，已經在飄的數字才不會
+        因為後面又冒出新數字而跳來跳去。"""
+        for number in self.fx.numbers_for(origin):
+            draw_text(grid, x + number.slot * 5, y + number.row_offset, f"-{number.amount}", fg=number.display_color)
 
     # -- 右面板：戰鬥紀錄 / 卡牌詳細資訊 ------------------------------------
 

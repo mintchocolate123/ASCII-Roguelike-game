@@ -4,7 +4,10 @@
 - 敵人 HP 下降：敵人圖閃紅並左右抖動 1 格（ENEMY_HIT）
 - 玩家 HP 下降：玩家狀態列閃紅（PLAYER_HIT）
 - 護盾增加：護盾數字閃藍色（PLAYER_BLOCK_GAIN / ENEMY_BLOCK_GAIN）
-- 傷害數字彈出：受擊位置浮出數字往上飄後淡出，扣血用 hp 色、被護盾吸收的量用 block 色
+- 傷害數字彈出：受擊位置浮出數字往上飄後淡出，扣血用 hp 色、被護盾吸收的量用 block 色。
+  多段攻擊（卡牌有 hits 欄位且大於 1）不會只彈一個總和數字：battle scene 會把這次對敵人造成
+  的總傷害（扣血 + 護盾吸收）依卡牌資料判斷後平均拆成 hits 份，依序間隔短暫時間彈出，最後
+  一份補上除不盡的餘數，全部用 hp 色顯示（不再細分扣血／護盾吸收）
 - 延遲血條：血條先快速掉到新值，後面留一段較淡的顏色慢慢追上
 - 頭目大招整面晃動：敵人單次攻擊造成的傷害達到門檻時整個畫面晃動（SCREEN_SHAKE），
   沒達到門檻的一般攻擊維持只晃玩家狀態列（PLAYER_HIT 的 shake_offset）
@@ -44,6 +47,7 @@ SHAKE_OFFSETS = (-1, 1, -1, 1, 0)  # 抖動的左右位移序列，最後回到 
 DAMAGE_NUMBER_DURATION = 0.8  # 傷害數字從彈出到消失的總時間
 DAMAGE_NUMBER_RISE = 3  # 往上飄幾格
 DAMAGE_NUMBER_FADE_AT = 0.6  # 進度超過這個比例後開始淡出（改用 dim 色）
+DAMAGE_NUMBER_STAGGER_INTERVAL = 0.12  # 多段攻擊每一份數字之間，依序彈出的間隔
 
 HP_LAG_DURATION = 0.6  # 較淡的殘影血條追上新血量要花多久
 
@@ -71,15 +75,24 @@ class _FloatingNumber:
     color: str  # "hp" 或 "block"
     origin: str  # "player" 或 "enemy"，決定要從哪個位置飄出
     duration: float
+    slot: int = 0  # 水平排列的固定順位，不受目前顯示中的數字增減影響（多段攻擊會有好幾個）
+    delay: float = 0.0  # 要再經過多久才開始出現；多段攻擊靠這個做出依序彈出的效果
     elapsed: float = 0.0
 
     @property
+    def visible(self) -> bool:
+        """delay 還沒過完之前，這個數字還「沒輪到」，不該畫出來（但仍然算在 is_playing 裡）。"""
+        return self.elapsed >= self.delay
+
+    @property
     def active(self) -> bool:
-        return self.elapsed < self.duration
+        return self.elapsed < self.delay + self.duration
 
     @property
     def progress(self) -> float:
-        return 0.0 if self.duration <= 0 else min(1.0, self.elapsed / self.duration)
+        if not self.visible or self.duration <= 0:
+            return 0.0
+        return min(1.0, (self.elapsed - self.delay) / self.duration)
 
     @property
     def row_offset(self) -> int:
@@ -224,12 +237,42 @@ class FxQueue:
 
     # -- 傷害數字彈出 -----------------------------------------------------
 
+    def _next_slot(self, origin: str) -> int:
+        """這個位置目前已經有幾個數字（含還沒輪到出現的），新數字的水平排列順位接在後面。"""
+        return sum(1 for n in self._numbers if n.origin == origin)
+
     def spawn_number(self, amount: int, color: str, origin: str, duration: float = DAMAGE_NUMBER_DURATION) -> None:
-        self._numbers.append(_FloatingNumber(amount, color, origin, duration))
+        self._numbers.append(_FloatingNumber(amount, color, origin, duration, slot=self._next_slot(origin)))
+
+    def spawn_staggered_numbers(
+        self,
+        total: int,
+        count: int,
+        color: str,
+        origin: str,
+        *,
+        duration: float = DAMAGE_NUMBER_DURATION,
+        interval: float = DAMAGE_NUMBER_STAGGER_INTERVAL,
+    ) -> None:
+        """多段攻擊（卡牌有 hits 欄位）用：把 total 平均拆成 count 份，依序間隔 interval 秒
+        彈出，除不盡的餘數補在最後一份。count <= 0 或 total <= 0 時什麼都不做。"""
+        if count <= 0 or total <= 0:
+            return
+        base = total // count
+        remainder = total - base * count
+        slot = self._next_slot(origin)
+        for i in range(count):
+            amount = base + (remainder if i == count - 1 else 0)
+            if amount <= 0:
+                continue
+            self._numbers.append(
+                _FloatingNumber(amount, color, origin, duration, slot=slot, delay=i * interval)
+            )
+            slot += 1
 
     def numbers_for(self, origin: str) -> list[_FloatingNumber]:
-        """回傳目前這個位置（"player" 或 "enemy"）還在飄的數字，依出現順序排列。"""
-        return [n for n in self._numbers if n.origin == origin]
+        """回傳目前這個位置（"player" 或 "enemy"）還在飄、而且已經輪到出現的數字。"""
+        return [n for n in self._numbers if n.origin == origin and n.visible]
 
     # -- 延遲血條 ---------------------------------------------------------
 

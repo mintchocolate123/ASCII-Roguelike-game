@@ -1,8 +1,11 @@
+import pytest
+
 from engine.fx import (
     CARD_FLY_DURATION,
     DAMAGE_NUMBER_DURATION,
     DAMAGE_NUMBER_FADE_AT,
     DAMAGE_NUMBER_RISE,
+    DAMAGE_NUMBER_STAGGER_INTERVAL,
     ENEMY_BLOCK_GAIN,
     ENEMY_DEATH_DURATION,
     ENEMY_HIT,
@@ -469,6 +472,140 @@ def test_default_damage_number_duration_constant_is_used():
     fx.spawn_number(6, "hp", "enemy")
     number = fx.numbers_for("enemy")[0]
     assert number.duration == DAMAGE_NUMBER_DURATION
+
+
+def test_multiple_spawn_number_calls_get_sequential_slots():
+    """兩個數字要左右錯開排列，水平順位不能相同（不然會疊在一起）。"""
+    fx = FxQueue()
+    fx.spawn_number(3, "hp", "enemy")
+    fx.spawn_number(5, "block", "enemy")
+    numbers = fx.numbers_for("enemy")
+    assert {n.slot for n in numbers} == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# FxQueue：多段攻擊（hits > 1）把總傷害拆成好幾份依序彈出
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_staggered_numbers_splits_total_evenly():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    numbers = sorted(fx._numbers, key=lambda n: n.delay)
+    assert [n.amount for n in numbers] == [3, 3, 3]
+
+
+def test_spawn_staggered_numbers_puts_remainder_on_last_one():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(10, 3, "hp", "enemy")
+    numbers = sorted(fx._numbers, key=lambda n: n.delay)
+    assert [n.amount for n in numbers] == [3, 3, 4]
+
+
+def test_spawn_staggered_numbers_uses_hp_color_and_correct_origin():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    assert all(n.color == "hp" and n.origin == "enemy" for n in fx._numbers)
+
+
+def test_spawn_staggered_numbers_delays_each_one_by_interval():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    delays = sorted(n.delay for n in fx._numbers)
+    assert delays == [0, DAMAGE_NUMBER_STAGGER_INTERVAL, DAMAGE_NUMBER_STAGGER_INTERVAL * 2]
+
+
+def test_spawn_staggered_numbers_only_first_one_visible_at_start():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    assert len(fx.numbers_for("enemy")) == 1
+    assert fx.numbers_for("enemy")[0].amount == 3
+
+
+def test_spawn_staggered_numbers_reveals_next_one_after_interval():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    fx.update(DAMAGE_NUMBER_STAGGER_INTERVAL + 0.001)
+    assert len(fx.numbers_for("enemy")) == 2
+    fx.update(DAMAGE_NUMBER_STAGGER_INTERVAL + 0.001)
+    assert len(fx.numbers_for("enemy")) == 3
+
+
+def test_spawn_staggered_numbers_gets_sequential_slots_so_they_line_up_left_to_right():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    slots = sorted(n.slot for n in fx._numbers)
+    assert slots == [0, 1, 2]
+
+
+def test_spawn_staggered_numbers_continues_slots_after_existing_number():
+    """同一個位置已經有一個數字（例如護盾增加）時，多段攻擊的數字要接著排，不能疊在同一格。"""
+    fx = FxQueue()
+    fx.spawn_number(5, "block", "enemy")
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    slots = sorted(n.slot for n in fx._numbers)
+    assert slots == [0, 1, 2, 3]
+
+
+def test_spawn_staggered_numbers_does_nothing_when_total_is_zero_or_negative():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(0, 3, "hp", "enemy")
+    assert fx.numbers_for("enemy") == []
+    assert fx.is_playing is False
+
+
+def test_spawn_staggered_numbers_does_nothing_when_count_is_zero_or_negative():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 0, "hp", "enemy")
+    assert fx.numbers_for("enemy") == []
+
+
+def test_spawn_staggered_numbers_skips_zero_shares_when_total_smaller_than_count():
+    """總傷害比份數還小時，前面幾份會是 0（沒有意義），不該真的排入，餘數全部補在最後一份。"""
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(2, 3, "hp", "enemy")
+    assert len(fx._numbers) == 1
+    assert fx._numbers[0].amount == 2
+
+
+def test_spawn_staggered_numbers_makes_is_playing_true_even_before_first_is_visible():
+    fx = FxQueue()
+    assert fx.is_playing is False
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    assert fx.is_playing is True
+
+
+def test_spawn_staggered_numbers_each_number_still_rises_and_fades_normally_once_visible():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy", duration=1.0)
+    fx.update(0.5)  # 第一份 delay=0，一開始就看得到，已經出現 0.5 秒
+    first = next(n for n in fx._numbers if n.delay == 0)
+    assert first.progress == pytest.approx(0.5)
+    assert first.row_offset == -round(DAMAGE_NUMBER_RISE * 0.5)
+
+
+def test_spawn_staggered_numbers_all_expire_after_their_own_delay_plus_duration():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy", duration=0.2)
+    last_delay = (3 - 1) * DAMAGE_NUMBER_STAGGER_INTERVAL
+    fx.update(last_delay + 0.2 + 0.01)
+    assert fx._numbers == []
+    assert fx.is_playing is False
+
+
+def test_skip_clears_staggered_numbers_including_not_yet_visible_ones():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    fx.skip()
+    assert fx._numbers == []
+    assert fx.is_playing is False
+
+
+def test_default_stagger_interval_constant_is_used():
+    fx = FxQueue()
+    fx.spawn_staggered_numbers(9, 3, "hp", "enemy")
+    delays = sorted(n.delay for n in fx._numbers)
+    assert delays[1] == DAMAGE_NUMBER_STAGGER_INTERVAL
 
 
 # ---------------------------------------------------------------------------

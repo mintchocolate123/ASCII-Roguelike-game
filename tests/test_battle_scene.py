@@ -3,7 +3,16 @@ from pathlib import Path
 from engine import layout
 from engine.actions import Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Reload
 from engine.bridge import Bridge
-from engine.fx import ENEMY_HIT, INTENT_CHANGE, PLAYER_BLOCK_GAIN, PLAYER_HIT, SCREEN_SHAKE, SCREEN_SHAKE_THRESHOLD
+from engine.fx import (
+    CARD_FLY_DURATION,
+    DAMAGE_NUMBER_STAGGER_INTERVAL,
+    ENEMY_HIT,
+    INTENT_CHANGE,
+    PLAYER_BLOCK_GAIN,
+    PLAYER_HIT,
+    SCREEN_SHAKE,
+    SCREEN_SHAKE_THRESHOLD,
+)
 from engine.grid import Grid, plain_lines
 from engine.scenes.battle import STATE_PLAYER_TURN, STATE_SHOWING_ERROR, BattleScene
 
@@ -113,25 +122,75 @@ def test_loses_when_enemy_attack_reduces_player_hp_to_zero():
 
 
 # ---------------------------------------------------------------------------
-# 沒被處理的欄位（hits、draw）不能讓遊戲出錯
+# hits、draw、energy、self_damage：mods/core/rules.py 已經補齊，不再是課後作業欄位
 # ---------------------------------------------------------------------------
 
 
-def test_card_with_hits_field_not_handled_by_rules_does_not_crash():
+def test_card_with_hits_field_deals_damage_multiple_times():
     card = _card(id="flurry_like", name="連斬", damage=3, hits=3)
     scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
     scene.handle([PlayCard(0)])
     assert scene.fatal_error is None
     assert scene.state == STATE_PLAYER_TURN
-    assert scene.enemy["hp"] == 96  # hits 被忽略，只扣一次 damage
+    assert scene.enemy["hp"] == 90  # 3 點傷害 x 3 次
 
 
-def test_card_with_draw_field_not_handled_by_rules_does_not_crash():
-    card = _card(id="insight_like", name="洞察", cost=0, draw=2)
+def test_hits_computes_block_absorption_separately_each_hit():
+    """每次命中都要用「目前」的護盾值重新計算吸收，不能只算一次就套用 hits 次
+    （常見的錯誤寫法：三次都檢查同一個沒更新過的護盾值，會少扣很多血）。"""
+    card = _card(id="flurry_like", name="連斬", damage=3, hits=3)
     scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.enemy["block"] = 4
+    scene.handle([PlayCard(0)])
+    # 第 1 次：3 傷害全被 4 護盾擋下，護盾剩 1；第 2 次：1 被擋、2 穿透；第 3 次：3 全穿透
+    # 總共扣血 0+2+3=5，護盾歸 0（如果沒有在命中之間更新護盾，會是 hp 99、護盾 1）
+    assert scene.enemy["block"] == 0
+    assert scene.enemy["hp"] == 94
+
+
+def test_hits_produces_same_final_result_as_equivalent_single_hit_of_total_damage():
+    """護盾只會被「消耗」，分成好幾次打跟一次打完總傷害，最後護盾吸收量跟扣血量應該一樣；
+    這個等式如果被打破，代表命中之間沒有正確更新護盾。"""
+    scene_multi = BattleScene(_bridge(), _player([_card(id="a", damage=3, hits=3)]), _enemy(hp=99))
+    scene_multi.enemy["block"] = 4
+    scene_multi.handle([PlayCard(0)])
+
+    scene_single = BattleScene(_bridge(), _player([_card(id="b", damage=9)]), _enemy(hp=99))
+    scene_single.enemy["block"] = 4
+    scene_single.handle([PlayCard(0)])
+
+    assert scene_multi.enemy["hp"] == scene_single.enemy["hp"] == 94
+    assert scene_multi.enemy["block"] == scene_single.enemy["block"] == 0
+
+
+def test_card_with_draw_field_draws_cards():
+    card = _card(id="insight_like", name="洞察", cost=0, draw=2)
+    scene = BattleScene(_bridge(), _player([card] * 10), _enemy(hp=99))
+    hand_len_before = len(scene.player["hand"])
     scene.handle([PlayCard(0)])
     assert scene.fatal_error is None
     assert scene.state == STATE_PLAYER_TURN
+    # 打出 1 張、抽 2 張：手牌數量應該比打牌前多 1（-1 +2）
+    assert len(scene.player["hand"]) == hand_len_before + 1
+
+
+def test_card_with_energy_field_gains_energy():
+    card = _card(id="charge_like", name="蓄力", cost=0, energy=2)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    energy_before = scene.player["energy"]
+    scene.handle([PlayCard(0)])
+    assert scene.fatal_error is None
+    assert scene.player["energy"] == energy_before + 2  # 花費 0、獲得 2
+
+
+def test_card_with_self_damage_field_hurts_player_ignoring_own_block():
+    card = _card(id="last_stand_like", name="背水", damage=10, self_damage=3)
+    scene = BattleScene(_bridge(), _player([card], hp=50), _enemy(hp=99))
+    scene.player["block"] = 10  # 護盾不該擋自傷
+    scene.handle([PlayCard(0)])
+    assert scene.fatal_error is None
+    assert scene.player["hp"] == 47  # 50 - 3，護盾沒有擋
+    assert scene.player["block"] == 10  # 護盾維持不變
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +620,121 @@ def test_terminal_mode_never_spawns_damage_numbers():
     scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=False)
     scene.handle([PlayCard(0)])
     assert scene.fx.numbers_for("enemy") == []
+
+
+# ---------------------------------------------------------------------------
+# 多段攻擊（卡牌有 hits 欄位且大於 1）：傷害數字拆成好幾份，依序間隔短暫時間彈出
+# ---------------------------------------------------------------------------
+
+
+def test_playing_multi_hit_card_splits_total_into_hits_numbers():
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.enemy["hp"] == 90  # 遊戲邏輯本身：3 點傷害 x 3 次
+    # 剛出牌時只有第一份輪到出現，其餘兩份已經排進佇列，只是還沒輪到（delay 還沒過）。
+    assert len(scene.fx.numbers_for("enemy")) == 1
+    assert scene.fx.numbers_for("enemy")[0].amount == 3
+    assert len(scene.fx._numbers) == 3
+
+
+def test_multi_hit_numbers_reveal_one_by_one_over_time():
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    scene.update(DAMAGE_NUMBER_STAGGER_INTERVAL + 0.001)
+    assert len(scene.fx.numbers_for("enemy")) == 2
+    scene.update(DAMAGE_NUMBER_STAGGER_INTERVAL + 0.001)
+    assert len(scene.fx.numbers_for("enemy")) == 3
+
+
+def test_multi_hit_damage_split_accounts_for_block_absorption():
+    """拆分的是「扣血 + 護盾吸收」的總和，不是只看扣血量。"""
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.enemy["block"] = 4
+    scene.handle([PlayCard(0)])
+    total = sum(n.amount for n in scene.fx._numbers if n.origin == "enemy")
+    assert total == (99 - scene.enemy["hp"]) + (4 - scene.enemy["block"])
+
+
+def test_multi_hit_split_evenly_when_total_divides_cleanly():
+    card = _card(damage=10, hits=3, cost=1)  # 總傷害 30，剛好整除成 10/10/10
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=999), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    amounts = sorted(n.amount for n in scene.fx._numbers if n.origin == "enemy")
+    assert amounts == [10, 10, 10]
+
+
+def test_hits_equal_to_one_still_uses_single_combined_number():
+    card = _card(damage=6, hits=1, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    numbers = scene.fx.numbers_for("enemy")
+    assert len(numbers) == 1
+    assert numbers[0].amount == 6
+
+
+def test_card_without_hits_field_still_uses_single_combined_number():
+    card = _card(damage=6, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert len(scene.fx.numbers_for("enemy")) == 1
+
+
+def test_multi_hit_numbers_all_use_hp_color_even_when_block_absorbs_some():
+    """原本被護盾吸收的量會用 block 色顯示；多段攻擊改成單一 hp 色的分批序列。"""
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.enemy["block"] = 4
+    scene.handle([PlayCard(0)])
+    assert all(n.color == "hp" for n in scene.fx._numbers if n.origin == "enemy")
+
+
+def test_multi_hit_does_not_affect_player_side_numbers():
+    """hits 只影響敵人這邊；玩家自己（例如 self_damage）的數字維持原本一次到位的邏輯。"""
+    card = _card(damage=3, hits=3, self_damage=2, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    player_numbers = scene.fx.numbers_for("player")
+    assert len(player_numbers) == 1
+    assert player_numbers[0].amount == 2
+
+
+def test_terminal_mode_never_splits_multi_hit_numbers():
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=False)
+    scene.handle([PlayCard(0)])
+    assert scene.fx._numbers == []
+    assert scene.enemy["hp"] == 90  # 遊戲邏輯本身不受影響，只是沒有動畫
+
+
+def test_multi_hit_sequence_can_be_skipped_by_next_input():
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    assert scene.fx.is_playing is True
+    scene.handle([PlayCard(0)])  # 任意輸入：快轉，不是真的出第二張牌
+    assert scene.fx.is_playing is False
+    assert scene.fx._numbers == []
+
+
+def test_draw_positions_multi_hit_numbers_side_by_side_by_slot():
+    card = _card(damage=3, hits=3, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([PlayCard(0)])
+    # 等出牌飛出動畫（CARD_FLY_DURATION，比這裡短）播完，避免它飛過敵人血條那一列，
+    # 暫時跟還在飄的傷害數字疊在同一格，干擾這個測試要驗證的排列邏輯。
+    scene.update(CARD_FLY_DURATION + DAMAGE_NUMBER_STAGGER_INTERVAL * 2 + 0.01)
+
+    grid = Grid()
+    scene.draw(grid)
+    lines = plain_lines(grid)
+    matches = [(y, x) for y, line in enumerate(lines) for x in range(len(line) - 1) if line[x : x + 2] == "-3"]
+    assert len(matches) == 3
+    xs = sorted(x for _, x in matches)
+    assert xs[1] - xs[0] == 5  # 用固定的 slot 排列，不是清單索引，才不會因為新數字出現而跳動
+    assert xs[2] - xs[1] == 5
 
 
 # ---------------------------------------------------------------------------

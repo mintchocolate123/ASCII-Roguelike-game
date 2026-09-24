@@ -478,7 +478,7 @@ class RunStage(BaseModel):
 player dict 必要欄位：`name`、`hp`、`max_hp`、`block`、`energy`、`draw_pile`、`hand`、`discard`。
 enemy dict 必要欄位：`id`、`name`、`hp`、`max_hp`、`block`、`actions`、`action_index`、`art`、`color`。
 
-rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引擎的 cardtext 負責。第一版必須支援 damage、block 和 heal。hits、draw、energy 和 self_damage 保留給學生作為課後作業，引擎要能正常處理「卡牌有這些欄位，但規則沒有處理」的情況。
+rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引擎的 cardtext 負責。core 的 `play_card` 支援全部欄位：`damage`（搭配 `hits` 時要重複執行，每次命中都要用目前的護盾值重新計算吸收，不能只算一次再乘上次數，例如傷害 3 打 3 次遇到護盾 4 的結果要跟「用目前護盾值逐次計算」一致，不是拿總傷害對照一次固定的舊護盾值）、`block`、`heal`、`draw`（呼叫 `_draw_cards`）、`energy`、`self_damage`（直接扣玩家血量，不經過玩家自己的護盾）。引擎本身仍然要能正常處理「卡牌有欄位，但規則沒有處理」的情況，只是 core 目前對這些欄位都有實作。
 
 ## 遊戲流程
 
@@ -494,7 +494,14 @@ rules.py 不處理任何檔案讀取，也不處理卡牌描述，描述由引�
 - 敵人 HP 下降：敵人圖閃紅並左右抖動 1 格
 - 玩家 HP 下降：玩家狀態列閃紅
 - 護盾增加：護盾數字閃藍色
-- 傷害數字彈出：從受擊位置（`engine/layout.py` 的 `ENEMY_DAMAGE_NUMBER_X/Y`、`PLAYER_DAMAGE_NUMBER_X/Y`）往上飄，扣血的數字用 hp 色，被護盾吸收的量用 block 色；飄動與淡出的時間、上升格數由 `engine/fx.py` 的 `DAMAGE_NUMBER_DURATION`、`DAMAGE_NUMBER_RISE`、`DAMAGE_NUMBER_FADE_AT` 控制，淡出以切換成 dim 色近似（字元格無法做透明漸層）。同一個目標同時出現多個數字時，往右依序錯開排列。
+- 傷害數字彈出：從受擊位置（`engine/layout.py` 的 `ENEMY_DAMAGE_NUMBER_X/Y`、`PLAYER_DAMAGE_NUMBER_X/Y`）往上飄，扣血的數字用 hp 色，被護盾吸收的量用 block 色；飄動與淡出的時間、上升格數由 `engine/fx.py` 的 `DAMAGE_NUMBER_DURATION`、`DAMAGE_NUMBER_RISE`、`DAMAGE_NUMBER_FADE_AT` 控制，淡出以切換成 dim 色近似（字元格無法做透明漸層）。同一個目標同時出現多個數字時，用 `_FloatingNumber.slot`（固定的水平排列順位，不是清單索引）往右依序錯開排列，避免舊數字因為新數字出現而跳動。
+  - 多段攻擊（打出的卡有 `hits` 欄位且大於 1）不會只彈一個總和數字：battle scene 從卡牌資料
+    判斷出這是多段攻擊後，把這次對敵人造成的總傷害（扣血 + 護盾吸收）平均拆成 `hits` 份，
+    全部用 hp 色，依序間隔 `engine/fx.py` 的 `DAMAGE_NUMBER_STAGGER_INTERVAL` 彈出，最後一份
+    補上除不盡的餘數（`FxQueue.spawn_staggered_numbers()`）。這是純粹從卡牌資料（`hits`
+    欄位）加上 view diff 算出來的視覺效果，不需要 `rules.py` 配合、也不需要 mod 呼叫任何
+    fx API；遊戲邏輯（扣血、判斷勝負）在出牌當下就已經完成，只有這個「彈出」的視覺呈現是
+    分批的。
 - 延遲血條：`draw_hp_bar` 支援 `lag_current` 參數，血條本身先跳到新值，殘影（dim 色）留在原本的位置慢慢追上，追上所花的時間是 `engine/fx.py` 的 `HP_LAG_DURATION`。
 - 頭目大招整面晃動：敵人單次攻擊造成的傷害（打進 hp 的 + 被護盾吸收的）達到門檻（`engine/fx.py` 的
   `SCREEN_SHAKE_THRESHOLD`，預設 20）時，整個畫面左右位移 1 格；沒達到門檻的一般攻擊維持原本只晃
