@@ -1,4 +1,5 @@
 """驗收條件：python main.py --terminal 可以完整打完一場戰鬥，不會崩潰。"""
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _run_battle(enemy: str, keys: str, timeout: int = 15) -> subprocess.CompletedProcess:
+    # 明確指定 COLUMNS/LINES：subprocess 的輸出被導向管線、不是真的終端機，
+    # 但 shutil.get_terminal_size() 仍然會優先讀這兩個環境變數，測試環境可能剛好設成
+    # 比較小的值，導致誤觸「視窗太小」的提示，所以在這裡固定成夠大的畫面。
+    env = {**os.environ, "COLUMNS": "96", "LINES": "40"}
     return subprocess.run(
         [sys.executable, "main.py", "--terminal", "--enemy", enemy],
         cwd=REPO_ROOT,
@@ -14,6 +19,7 @@ def _run_battle(enemy: str, keys: str, timeout: int = 15) -> subprocess.Complete
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
 
 

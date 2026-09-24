@@ -19,3 +19,7 @@ class Renderer(ABC):
     @abstractmethod
     def supports_animation(self) -> bool:
         ...
+
+    def close(self) -> None:
+        """釋放渲染器持有的資源（例如關閉視窗）。預設不需要做任何事。"""
+        pass

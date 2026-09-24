@@ -1,0 +1,149 @@
+"""pygame 版渲染器：用附帶的 Sarasa Fixed 字型畫出跟終端機版一樣的內容。"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pygame
+
+from .. import layout, palette
+from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard, Quit, Reload
+from ..grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH, HEIGHT as GRID_HEIGHT, WIDTH as GRID_WIDTH, Grid
+from .base import Renderer
+
+DEFAULT_FONT_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "assets" / "fonts" / "SarasaFixedTC-Regular.ttf"
+)
+
+WINDOW_WIDTH = GRID_WIDTH * CELL_PIXEL_WIDTH
+WINDOW_HEIGHT = GRID_HEIGHT * CELL_PIXEL_HEIGHT
+
+FPS = 60
+
+_KEY_TO_ACTION = {
+    pygame.K_e: EndTurn,
+    pygame.K_RETURN: Confirm,
+    pygame.K_KP_ENTER: Confirm,
+    pygame.K_F5: Reload,
+    pygame.K_ESCAPE: Back,
+}
+
+
+class FontLoadError(Exception):
+    """字型檔遺失或載入失敗時使用，讓呼叫端可以顯示清楚的中文說明，不要讓程式直接崩潰。"""
+
+
+def _fit_font(path: str, cell_width: int, cell_height: int) -> pygame.font.Font:
+    """挑一個字級，讓半形字元剛好佔一格、全形字元剛好佔兩格。"""
+    size = cell_height
+    while size > 4:
+        font = pygame.font.Font(path, size)
+        ascii_w, ascii_h = font.size("A")
+        cjk_w, cjk_h = font.size("字")
+        if ascii_w <= cell_width and cjk_w <= cell_width * 2 and max(ascii_h, cjk_h) <= cell_height:
+            return font
+        size -= 1
+    return pygame.font.Font(path, 4)
+
+
+class PygameRenderer(Renderer):
+    def __init__(self, font_path: str | Path = DEFAULT_FONT_PATH) -> None:
+        font_path = Path(font_path)
+        if not font_path.exists():
+            raise FontLoadError(
+                f"找不到字型檔：{font_path}\n"
+                "請確認 assets/fonts/SarasaFixedTC-Regular.ttf 是否存在，"
+                "或使用 --terminal 改用終端機版。"
+            )
+
+        pygame.display.init()
+        pygame.font.init()
+        try:
+            self._font = _fit_font(str(font_path), CELL_PIXEL_WIDTH, CELL_PIXEL_HEIGHT)
+        except pygame.error as exc:
+            raise FontLoadError(f"字型檔載入失敗：{font_path}（{exc}）") from exc
+
+        self._screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("ASCII 卡牌遊戲")
+        self._clock = pygame.time.Clock()
+        self._glyph_cache: dict[tuple[str, str, str | None], pygame.Surface] = {}
+        self._hover_index: int | None = None
+
+    # ------------------------------------------------------------------
+    # Renderer 介面
+    # ------------------------------------------------------------------
+
+    def present(self, grid: Grid) -> None:
+        if not grid.dirty:
+            return
+        self._screen.fill(palette.resolve("bg"))
+        for y in range(grid.height):
+            for x in range(grid.width):
+                cell = grid.get(x, y)
+                if cell.wide_tail:
+                    continue
+                surface = self._glyph_surface(cell.char, cell.fg, cell.bg)
+                self._screen.blit(surface, (x * CELL_PIXEL_WIDTH, y * CELL_PIXEL_HEIGHT))
+        pygame.display.flip()
+        grid.dirty = False
+
+    def poll_actions(self) -> list[Action]:
+        self._clock.tick(FPS)
+        actions: list[Action] = []
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                actions.append(Quit())
+            elif event.type == pygame.KEYDOWN:
+                action = self._action_for_keydown(event)
+                if action is not None:
+                    actions.append(action)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                index = self._card_index_at(event.pos)
+                if index is not None:
+                    actions.append(PlayCard(index))
+            elif event.type == pygame.MOUSEMOTION:
+                index = self._card_index_at(event.pos)
+                if index != self._hover_index:
+                    self._hover_index = index
+                    actions.append(Inspect(index))
+        return actions
+
+    def supports_animation(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        pygame.display.quit()
+        pygame.font.quit()
+
+    # ------------------------------------------------------------------
+    # 內部細節
+    # ------------------------------------------------------------------
+
+    def _glyph_surface(self, char: str, fg: str, bg: str | None) -> pygame.Surface:
+        key = (char, fg, bg)
+        surface = self._glyph_cache.get(key)
+        if surface is None:
+            fg_rgb = palette.resolve(fg)
+            bg_rgb = palette.resolve(bg) if bg else palette.resolve("bg")
+            surface = self._font.render(char if char else " ", True, fg_rgb, bg_rgb)
+            self._glyph_cache[key] = surface
+        return surface
+
+    @staticmethod
+    def _action_for_keydown(event: pygame.event.Event) -> Action | None:
+        if pygame.K_1 <= event.key <= pygame.K_7:
+            return PlayCard(event.key - pygame.K_1)
+        action_cls = _KEY_TO_ACTION.get(event.key)
+        return action_cls() if action_cls is not None else None
+
+    @staticmethod
+    def _card_index_at(pos: tuple[int, int]) -> int | None:
+        px, py = pos
+        col = px // CELL_PIXEL_WIDTH
+        row = py // CELL_PIXEL_HEIGHT
+        if not (layout.HAND_ROW_TOP <= row <= layout.HAND_ROW_BOTTOM):
+            return None
+        for i in range(layout.CARD_MAX_COUNT):
+            start = layout.card_slot_x(i)
+            if start <= col < start + layout.CARD_WIDTH:
+                return i
+        return None
