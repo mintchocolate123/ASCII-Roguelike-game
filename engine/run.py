@@ -1,9 +1,57 @@
-"""一局遊戲的進度。目前只提供單場戰鬥需要的部分：組出初始牌組、選擇對手；
-戰鬥之間保存玩家狀態、reward/rest 留到後面的階段再擴充。
+"""一局遊戲的進度：依 run.json 推進關卡，在戰鬥之間保存玩家血量與牌組，
+每場戰鬥開始時重建抽牌堆（由 rules.py 的 create_player 負責）。
 """
 from __future__ import annotations
 
 import random
+
+REST_HEAL_RATIO = 0.3
+
+
+class Run:
+    """一局遊戲的進度：目前在第幾關、牌組、血量。
+
+    hp/max_hp 一開始是 None，因為到底玩家滿血是多少由 rules.py 決定，不是引擎決定；
+    第一次呼叫 create_player() 之後才知道，之後每場戰鬥開始前再把保存的 hp 蓋回去。
+    """
+
+    def __init__(self, stages: list[dict], deck: list[dict]) -> None:
+        self.stages = stages
+        self.stage_index = 0
+        self.deck = deck
+        self.hp: int | None = None
+        self.max_hp: int | None = None
+
+    @property
+    def current_stage(self) -> dict | None:
+        if 0 <= self.stage_index < len(self.stages):
+            return self.stages[self.stage_index]
+        return None
+
+    @property
+    def is_finished(self) -> bool:
+        return self.stage_index >= len(self.stages)
+
+    @property
+    def floor(self) -> int:
+        """給畫面顯示用的樓層數，從 1 開始。"""
+        return self.stage_index + 1
+
+    def advance(self) -> None:
+        self.stage_index += 1
+
+    def record_hp(self, hp: int, max_hp: int) -> None:
+        self.hp = hp
+        self.max_hp = max_hp
+
+    def rest_heal(self) -> int:
+        """回復 30% 最大血量，回傳實際回復的量。"""
+        if self.max_hp is None or self.hp is None:
+            return 0
+        healed_target = min(self.max_hp, self.hp + int(self.max_hp * REST_HEAL_RATIO))
+        healed_amount = healed_target - self.hp
+        self.hp = healed_target
+        return healed_amount
 
 
 def build_starting_deck(cards: dict[str, dict]) -> list[dict]:

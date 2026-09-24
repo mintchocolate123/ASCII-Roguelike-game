@@ -46,3 +46,22 @@ def test_unknown_enemy_full_id_fails_gracefully():
     assert "Traceback (most recent call last)" not in result.stderr
     assert result.returncode != 0
     assert "無法開始戰鬥" in result.stdout
+
+
+def test_default_flow_no_enemy_flag_reaches_first_battle_via_loading_and_title():
+    """驗收條件：main.py 改成從 loading 進入。不帶 --enemy 時走 loading -> title -> 第一關戰鬥。"""
+    env = {**os.environ, "COLUMNS": "96", "LINES": "40"}
+    result = subprocess.run(
+        [sys.executable, "main.py", "--terminal"],
+        cwd=REPO_ROOT,
+        input="\n\n",  # Enter 通過 loading，再 Enter 通過 title
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=env,
+    )
+    assert "Traceback (most recent call last)" not in result.stderr
+    assert result.returncode == 0
+    assert "已離開遊戲" in result.stdout
+    assert "ASCII 卡牌遊戲" in result.stdout  # title 畫面
+    assert "[ 冒險者 ]" in result.stdout  # 已經進到戰鬥畫面，不是卡在 loading/title
