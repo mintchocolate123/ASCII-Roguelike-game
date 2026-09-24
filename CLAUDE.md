@@ -56,6 +56,9 @@
 │   │   ├── art/
 │   │   └── rules.py
 │   └── example_mod/            範例 mod，學生複製此資料夾開始製作
+│       ├── mod.json
+│       ├── cards.json
+│       └── scripts/            第二階段：用 @register_effect() 註冊 class 的範例
 ├── tools/                      開發用的 demo 與工具，不放在根目錄
 ├── assets/fonts/SarasaFixedTC-Regular.ttf
 └── tests/
@@ -318,12 +321,51 @@ class Renderer:
 1. 掃描 `mods/`，略過名稱以 `_` 開頭的資料夾，視為停用。
 2. 讀取並驗證每個 `mod.json`。
 3. 依照 `depends` 進行拓撲排序，core 永遠最先。缺少依賴或循環依賴時，停用相關 mod。
-4. 依序讀取 `cards.json`、`enemies.json`、`run.json`（只有 core 可以提供 run.json），轉換成 Pydantic 模型。所有資料檔都是選填。
-5. 驗證卡牌描述：代入佔位符、換行並檢查行數，規則見「卡牌描述」一節。
-6. 讀取並驗證 ASCII 圖檔：路徑相對於該 mod 的 `art/`；最大 24×10；只允許字元碼 32 到 126。尺寸超出時裁切並產生警告，出現非法字元時該敵人無效。
-7. 檢查跨檔參照：run.json 中每個 tier 至少要有一個敵人，overrides 的目標必須存在。
-8. 合併到全域資料庫。
-9. 第二階段：載入 mod 的 `scripts/*.py` 並註冊 class，再檢查 JSON 中的 `effect` 是否有對應的已註冊 class。
+4. 依 topo 排序逐一處理每個 mod，每個 mod 內部依序：
+   1. 第二階段：載入這個 mod 的 `scripts/*.py`（見「mod 腳本與效果註冊表」一節）。腳本載入
+      失敗時整個 mod 到此為止，不會繼續處理下面幾步，也不會合併任何內容。
+   2. 讀取 `cards.json`、`enemies.json`、`run.json`（只有 core 可以提供 run.json），轉換成
+      Pydantic 模型。所有資料檔都是選填。
+   3. 驗證卡牌描述：代入佔位符、換行並檢查行數，規則見「卡牌描述」一節；第二階段還會檢查
+      `effect` 欄位的完整 id 是否有對應的已註冊 class，沒有就跳過那張卡。
+   4. 讀取並驗證 ASCII 圖檔：路徑相對於該 mod 的 `art/`；最大 24×10；只允許字元碼 32 到
+      126。尺寸超出時裁切並產生警告，出現非法字元時該敵人無效。
+   5. 合併到全域資料庫。
+5. 檢查跨檔參照：run.json 中每個 tier 至少要有一個敵人，overrides 的目標必須存在。
+
+### mod 腳本與效果註冊表（engine/mod/registry.py，第二階段）
+
+- mod 可以在自己的資料夾底下放 `scripts/*.py`，是普通的 Python 檔案，會被引擎用 `importlib`
+  執行。腳本用 `from engine.mod.registry import register_effect` 引入裝飾器，把 class 註冊
+  進全域的效果註冊表：
+  ```python
+  from engine.mod.registry import register_effect
+
+  @register_effect("shield_slam")
+  class ShieldSlam:
+      def apply(self, player, enemy, card):
+          dealt = player.get("block", 0)
+          enemy["hp"] = max(0, enemy["hp"] - dealt)
+          return f"造成等同護盾值的 {dealt} 點傷害"
+  ```
+- 裝飾器只吃「本地 id」（`ID_PATTERN` 那組規則：小寫英文字母開頭，之後接小寫英文字母、數字或
+  底線）；loader 在執行某個 mod 的腳本期間會自動組成完整 id `mod_id:本地id` 存進去，跟卡牌、
+  敵人的完整 id 規則一樣。cards.json 的 `effect` 欄位就用這個完整 id 引用，例如
+  `"effect": "example_mod:shield_slam"`。
+- `apply(player, enemy, card)` 是這裡約定的 class 介面：`rules.py` 的 `play_card()` 看到卡牌
+  有 `effect` 欄位時，用完整 id 從註冊表找回 class、實例化後呼叫 `apply()`，把回傳的訊息跟
+  `damage`、`block`、`heal` 等欄位的效果一起疊加執行、合併進同一則訊息。
+- 腳本執行任意 Python：語法錯誤、`register_effect()` 收到格式不對的本地 id、同一個完整 id
+  重複註冊，或腳本裡其他任何例外，loader 都會攔截下來轉成中文錯誤訊息，**停用整個 mod**（不
+  只是那個腳本），不會讓遊戲崩潰。錯誤格式沿用其他報告的位置慣例，例如
+  「mods/example_mod/scripts/effects.py：載入腳本失敗（SyntaxError：...），已停用整個 mod。」
+- `effect` 完整 id 沒有對應到已註冊的 class 時（例如忘記寫腳本、id 打錯字），只跳過那一張卡
+  並產生警告，不影響同一個 mod 的其他內容。
+- 效果註冊表是全域單例，每次呼叫 `load_mods()`（含 F5 熱重載）都會先清空再重新執行所有 mod
+  的腳本，確保拿到的永遠是磁碟上最新版本的 class，不會有舊版殘留造成「重複註冊」的誤判。
+- `example_mod` 用這個機制實作了一張範例卡「護盾猛擊」（`mods/example_mod/scripts/effects.py`
+  的 `ShieldSlam`）：造成等同玩家目前護盾值的傷害——這種「引用另一個數值」的效果，光靠
+  `damage`／`block`／`heal` 這些資料欄位組合不出來，必須用 class 實作。
 
 ### 錯誤等級
 

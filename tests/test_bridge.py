@@ -211,6 +211,23 @@ def test_player_view_supports_to_dict_interface():
     assert view == {"name": "class 介面玩家", "hp": 10}
 
 
+def test_enemy_view_returns_dict_directly():
+    bridge = _bridge("rules_missing_functions.py")
+    enemy = {"name": "x", "hp": 1}
+    assert bridge.enemy_view(enemy) is enemy
+
+
+class _FakeObjectEnemy:
+    def to_dict(self):
+        return {"name": "class 介面敵人", "hp": 20}
+
+
+def test_enemy_view_supports_to_dict_interface():
+    bridge = _bridge("rules_missing_functions.py")
+    view = bridge.enemy_view(_FakeObjectEnemy())
+    assert view == {"name": "class 介面敵人", "hp": 20}
+
+
 # ---------------------------------------------------------------------------
 # reload()：重新從磁碟載入 rules.py
 # ---------------------------------------------------------------------------

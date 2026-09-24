@@ -19,6 +19,7 @@ def _write_mod(
     enemies: list[dict] | None = None,
     run: list[dict] | None = None,
     art: dict[str, str] | None = None,
+    scripts: dict[str, str] | None = None,
     manifest_overrides: dict | None = None,
 ) -> Path:
     mod_dir = mods_dir / mod_id
@@ -44,6 +45,11 @@ def _write_mod(
         art_dir.mkdir(exist_ok=True)
         for filename, content in art.items():
             (art_dir / filename).write_text(content, encoding="utf-8")
+    if scripts:
+        scripts_dir = mod_dir / "scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        for filename, content in scripts.items():
+            (scripts_dir / filename).write_text(content, encoding="utf-8")
     return mod_dir
 
 
@@ -82,6 +88,201 @@ def test_example_override_demo_mod_overrides_strike_when_enabled(tmp_path):
     assert db.cards["core:strike"]["damage"] == 8
     infos = report.by_level("info")
     assert any("已覆寫「core:strike」" in i for i in infos)
+
+
+# ---------------------------------------------------------------------------
+# mod 腳本與效果註冊表（第二階段）
+# ---------------------------------------------------------------------------
+
+VALID_EFFECT_SCRIPT = """
+from engine.mod.registry import register_effect
+
+
+@register_effect("shield_slam")
+class ShieldSlam:
+    def apply(self, player, enemy, card):
+        return "測試效果"
+"""
+
+
+def test_registered_effect_card_loads_successfully(tmp_path):
+    _write_mod(
+        tmp_path,
+        "core",
+        cards=[
+            {
+                "id": "slam",
+                "name": "測試卡",
+                "type": "attack",
+                "cost": 1,
+                "effect": "core:shield_slam",
+                "description": "測試描述。",
+            }
+        ],
+        scripts={"effects.py": VALID_EFFECT_SCRIPT},
+    )
+    db, report = load_mods(tmp_path)
+    assert not report.has_fatal, report.format_text()
+    assert not report.by_level("warning"), report.format_text()
+    assert "core:slam" in db.cards
+    assert db.cards["core:slam"]["effect"] == "core:shield_slam"
+
+
+def test_effect_id_not_registered_skips_card_with_chinese_warning(tmp_path):
+    _write_mod(
+        tmp_path,
+        "core",
+        cards=[
+            {
+                "id": "slam",
+                "name": "測試卡",
+                "type": "attack",
+                "cost": 1,
+                "effect": "core:does_not_exist",
+                "description": "測試描述。",
+            }
+        ],
+    )
+    db, report = load_mods(tmp_path)
+    assert "core:slam" not in db.cards
+    warnings = report.by_level("warning")
+    assert any(
+        "core:does_not_exist" in w and "沒有對應的已註冊 class" in w for w in warnings
+    ), report.format_text()
+
+
+def test_script_syntax_error_disables_whole_mod(tmp_path):
+    _write_mod(
+        tmp_path,
+        "core",
+        cards=[{"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6}],
+        scripts={"broken.py": "def bad(:\n    pass\n"},
+    )
+    db, report = load_mods(tmp_path)
+    assert "core" not in db.enabled_mods
+    assert "core:strike" not in db.cards
+    errors = report.by_level("error")
+    assert any(
+        "scripts/broken.py" in e and "SyntaxError" in e and "已停用整個 mod" in e for e in errors
+    ), report.format_text()
+    assert report.has_fatal  # core 沒有成功載入是致命錯誤
+
+
+def test_script_duplicate_registration_disables_whole_mod(tmp_path):
+    script = """
+from engine.mod.registry import register_effect
+
+
+@register_effect("dup")
+class A:
+    pass
+
+
+@register_effect("dup")
+class B:
+    pass
+"""
+    _write_mod(tmp_path, "core", cards=[], scripts={"effects.py": script})
+    db, report = load_mods(tmp_path)
+    assert "core" not in db.enabled_mods
+    errors = report.by_level("error")
+    assert any("重複註冊" in e for e in errors), report.format_text()
+
+
+def test_script_invalid_effect_id_format_disables_whole_mod(tmp_path):
+    script = """
+from engine.mod.registry import register_effect
+
+
+@register_effect("Not_Valid")
+class A:
+    pass
+"""
+    _write_mod(tmp_path, "core", cards=[], scripts={"effects.py": script})
+    db, report = load_mods(tmp_path)
+    assert "core" not in db.enabled_mods
+    errors = report.by_level("error")
+    assert any("格式不正確" in e for e in errors), report.format_text()
+
+
+def test_script_runtime_exception_disables_whole_mod_without_crashing(tmp_path):
+    _write_mod(tmp_path, "core", cards=[], scripts={"broken.py": "raise RuntimeError('boom')\n"})
+    db, report = load_mods(tmp_path)  # 不應該讓載入流程本身崩潰
+    assert "core" not in db.enabled_mods
+    errors = report.by_level("error")
+    assert any("RuntimeError" in e and "boom" in e for e in errors), report.format_text()
+
+
+def test_script_failure_does_not_partially_merge_that_mods_content(tmp_path):
+    """腳本失敗時整個 mod 都要停用，不能出現「卡牌合併了、但腳本錯誤也回報了」的半調子狀態。"""
+    _write_mod(
+        tmp_path,
+        "core",
+        cards=[{"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6}],
+        enemies=[
+            {
+                "id": "slime",
+                "name": "史萊姆",
+                "tier": "normal",
+                "hp": 10,
+                "art": "slime.txt",
+                "actions": [{"type": "attack", "value": 3}],
+            }
+        ],
+        art={"slime.txt": "(o)"},
+        scripts={"broken.py": "raise RuntimeError('boom')\n"},
+    )
+    db, report = load_mods(tmp_path)
+    assert db.cards == {}
+    assert db.enemies == {}
+
+
+def test_cross_mod_effect_reference_works_when_dependency_declared(tmp_path):
+    """mod B 的卡片引用 mod A（依賴）註冊的效果：A 先載入，B 才能成功參照。"""
+    _write_mod(tmp_path, "core", scripts={"effects.py": VALID_EFFECT_SCRIPT})
+    _write_mod(
+        tmp_path,
+        "addon",
+        depends=["core"],
+        cards=[
+            {
+                "id": "borrowed",
+                "name": "借用效果",
+                "type": "attack",
+                "cost": 1,
+                "effect": "core:shield_slam",
+                "description": "測試描述。",
+            }
+        ],
+    )
+    db, report = load_mods(tmp_path)
+    assert not report.has_fatal, report.format_text()
+    assert not report.by_level("warning"), report.format_text()
+    assert "addon:borrowed" in db.cards
+
+
+def test_registry_is_cleared_between_loads_so_reload_does_not_false_positive_duplicate(tmp_path):
+    """熱重載（F5）會重新呼叫 load_mods()；同一個效果 id 再註冊一次不該被誤判成「重複註冊」，
+    registry 必須在每次 load_mods() 開始前清空。"""
+    _write_mod(
+        tmp_path,
+        "core",
+        cards=[{"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6}],
+        scripts={"effects.py": VALID_EFFECT_SCRIPT},
+    )
+    _db1, report1 = load_mods(tmp_path)
+    assert not report1.has_error, report1.format_text()
+    _db2, report2 = load_mods(tmp_path)
+    assert not report2.has_error, report2.format_text()
+
+
+def test_mod_without_scripts_folder_loads_normally(tmp_path):
+    _write_mod(
+        tmp_path, "core", cards=[{"id": "strike", "name": "斬擊", "type": "attack", "cost": 1, "damage": 6}]
+    )
+    db, report = load_mods(tmp_path)
+    assert not report.has_fatal, report.format_text()
+    assert "core:strike" in db.cards
 
 
 # ---------------------------------------------------------------------------

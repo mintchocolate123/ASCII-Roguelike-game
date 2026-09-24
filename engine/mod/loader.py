@@ -1,6 +1,7 @@
 """掃描、排序、驗證、合併所有 mod 的內容。"""
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from ..cardtext import CardTextError, resolve_description
 from ..draw import wrap_text
 from .models import CardDef, EnemyDef, ModManifest, RunStage
+from .registry import registry
 from .report import LoadReport, format_field_error, format_location
 
 ART_MAX_WIDTH = 24
@@ -32,6 +34,7 @@ def load_mods(mods_dir: str | Path) -> tuple[ModDatabase, LoadReport]:
     mods_dir = Path(mods_dir)
     report = LoadReport()
     db = ModDatabase()
+    registry.clear()  # 每次重新載入（含 F5 熱重載）都要清空舊的效果註冊，避免誤判成重複註冊
 
     manifests, mod_paths = _scan_manifests(mods_dir, report)
     order = _topo_sort(manifests, report)
@@ -303,12 +306,59 @@ def _merge_record(
     origins[full_id] = (mod_id, filename, index)
 
 
+# ---------------------------------------------------------------------------
+# mod 腳本（第二階段）：scripts/*.py 用 @register_effect() 把 class 註冊進全域效果註冊表
+# ---------------------------------------------------------------------------
+
+
+def _exec_script(script_path: Path, mod_id: str) -> None:
+    """用 importlib 執行一個 mod 腳本。腳本裡任何等級的例外（含 SyntaxError）都會往外拋，
+    交給呼叫端接住，不在這裡吞掉。"""
+    module_name = f"mods.{mod_id}.scripts.{script_path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"無法載入腳本：{script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+
+def _load_scripts(mod_id: str, mod_dir: Path, report: LoadReport) -> bool:
+    """載入這個 mod 的 scripts/*.py，讓裡面用 @register_effect() 註冊的 class 進到全域註冊表。
+    mod 腳本執行任意 Python：語法錯誤、註冊重複、註冊 id 格式錯誤，或腳本裡其他任何例外，
+    都會停用整個 mod（回傳 False），呼叫端要跳過這個 mod 剩下的內容，不能讓遊戲崩潰。"""
+    scripts_dir = mod_dir / "scripts"
+    if not scripts_dir.exists():
+        return True
+    for script_path in sorted(scripts_dir.glob("*.py")):
+        registry.begin_mod(mod_id)
+        try:
+            _exec_script(script_path, mod_id)
+        except Exception as exc:  # 刻意攔截所有例外：mod 腳本可能寫出任何錯誤，不能讓引擎崩潰
+            report.error(
+                f"{format_location(mod_id, f'scripts/{script_path.name}')}："
+                f"載入腳本失敗（{type(exc).__name__}：{exc}），已停用整個 mod。"
+            )
+            return False
+        finally:
+            registry.end_mod()
+    return True
+
+
 def _load_mod_content(mod_id: str, mod_dir: Path, db: ModDatabase, report: LoadReport) -> None:
+    if not _load_scripts(mod_id, mod_dir, report):
+        return  # 腳本載入失敗，整個 mod 停用，不合併這個 mod 的任何內容
+
     cards_raw = _load_json_list(mod_dir / "cards.json", mod_id, "cards.json", report)
     cards = _validate_records(CardDef, cards_raw, mod_id, "cards.json", report)
     for idx, card in enumerate(cards):
         description = _validate_card_description(card, idx, mod_id, "cards.json", report)
         if description is None:
+            continue
+        if card.effect is not None and not registry.has_effect(card.effect):
+            report.warning(
+                f"{format_location(mod_id, 'cards.json', idx, card.id)}："
+                f"effect「{card.effect}」沒有對應的已註冊 class，這筆資料已跳過。"
+            )
             continue
         data = card.model_dump(exclude_none=True)
         data["description"] = description

@@ -3,8 +3,15 @@
 這是一個普通的 Python 檔案，引擎會呼叫這裡的函式，名稱與回傳格式固定（見 CLAUDE.md）。
 第一版只處理 damage、block、heal 三個欄位；hits、draw、energy、self_damage
 留給學生當課後作業自己補上。
+
+effect 欄位（第二階段）：資料組合不出來的效果，mod 會在自己的 scripts/*.py 裡用一個 class
+實作，並用 @register_effect() 註冊進 engine.mod.registry。這裡只需要依卡牌的 effect 完整 id
+找回那個 class、呼叫它的 apply(player, enemy, card) 方法，把回傳的訊息跟其他欄位的效果一起
+顯示，不需要知道效果實際做了什麼。
 """
 import random
+
+from engine.mod.registry import registry
 
 STARTING_HP = 50
 STARTING_ENERGY = 3
@@ -74,6 +81,10 @@ def play_card(player, enemy, hand_index):
     player["energy"] -= card["cost"]
 
     messages = []
+    if "effect" in card:
+        effect_cls = registry.get_effect(card["effect"])
+        if effect_cls is not None:
+            messages.append(effect_cls().apply(player, enemy, card))
     if "damage" in card:
         dealt = card["damage"]
         absorbed = min(enemy["block"], dealt)

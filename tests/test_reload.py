@@ -180,6 +180,52 @@ def test_reload_with_syntax_error_in_rules_keeps_old_scene_and_bridge(tmp_path, 
 
 
 # ---------------------------------------------------------------------------
+# F5 也要重新載入 mod 的 scripts/*.py（第二階段：registry、效果 class）
+# ---------------------------------------------------------------------------
+
+
+def test_reload_recompiles_mod_scripts_and_updates_registered_effect_behavior(tmp_path, monkeypatch):
+    """改 mod 的 scripts/*.py（不是 cards.json）也要能靠 F5 立即生效：修改 effect class 的行為
+    後重新載入，新打出的卡要用新版的 class，不能殘留舊版本。"""
+    controller, temp_mods = _controller_with_temp_mods(tmp_path, monkeypatch)
+
+    effects_path = temp_mods / "example_mod" / "scripts" / "effects.py"
+    original_source = effects_path.read_text(encoding="utf-8")
+    assert 'player.get("block", 0)' in original_source
+    effects_path.write_text(
+        original_source.replace(
+            'dealt = player.get("block", 0)',
+            'dealt = player.get("block", 0) * 2',
+        ),
+        encoding="utf-8",
+    )
+
+    controller.handle([Reload()])
+    new_scene = controller.scene
+    assert isinstance(new_scene, BattleScene)
+    assert any("已重新載入" in m for m in new_scene.battle_log)
+
+    card = next(c for c in controller.db.cards.values() if c["id"] == "shield_slam")
+    player = {
+        "name": "測試",
+        "hp": 50,
+        "max_hp": 50,
+        "block": 7,
+        "energy": 3,
+        "draw_pile": [],
+        "hand": [dict(card)],
+        "discard": [],
+    }
+    enemy = dict(new_scene.enemy)
+    enemy["hp"] = enemy["max_hp"] = 999
+
+    message = controller.bridge.play_card(player, enemy, 0)
+
+    assert enemy["hp"] == 999 - 14  # 改成護盾雙倍傷害後應該是 7*2=14，不是舊版的 7
+    assert "造成等同護盾值的 14 點傷害" in message
+
+
+# ---------------------------------------------------------------------------
 # 重載隨時可以按：fx 播放中、錯誤畫面顯示中都不會被擋住
 # ---------------------------------------------------------------------------
 

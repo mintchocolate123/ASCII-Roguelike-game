@@ -1,3 +1,13 @@
 [
-    {"id": "quick_stab", "name": "快刺", "type": "attack", "cost": 0, "damage": 3, "count": 0, "in_reward_pool": true}
+    {"id": "quick_stab", "name": "快刺", "type": "attack", "cost": 0, "damage": 3, "count": 0, "in_reward_pool": true},
+    {
+        "id": "shield_slam",
+        "name": "護盾猛擊",
+        "type": "attack",
+        "cost": 1,
+        "effect": "example_mod:shield_slam",
+        "description": "造成等同你目前護盾值的傷害。",
+        "count": 0,
+        "in_reward_pool": true
+    }
 ]
