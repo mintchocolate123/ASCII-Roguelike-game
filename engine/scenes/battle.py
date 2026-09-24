@@ -1,0 +1,406 @@
+"""戰鬥畫面：終端機版第一階段。走 BATTLE_START -> PLAYER_TURN -> ENEMY_TURN ->
+（分出勝負前一直循環）-> BATTLE_END 的狀態機，每次狀態轉換都呼叫 check_result。
+
+所有跟 mod 程式碼的接觸都透過 bridge，這個檔案完全不 import mods 底下的任何東西。
+"""
+from __future__ import annotations
+
+from .. import layout
+from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard
+from ..bridge import Bridge, ModCallError
+from ..draw import (
+    TYPE_LABELS,
+    draw_ascii_art,
+    draw_banner,
+    draw_box,
+    draw_card,
+    draw_energy_pips,
+    draw_hline,
+    draw_hp_bar,
+    draw_keyword_text,
+    draw_text,
+    draw_vline,
+    text_width,
+    wrap_text,
+)
+from ..grid import Grid
+from .scene import Scene
+
+STATE_BATTLE_START = "battle_start"
+STATE_PLAYER_TURN = "player_turn"
+STATE_ENEMY_TURN = "enemy_turn"
+STATE_BATTLE_END = "battle_end"
+STATE_SHOWING_ERROR = "showing_error"
+
+ERROR_PANEL_WIDTH = 90
+
+
+class BattleScene(Scene):
+    def __init__(self, bridge: Bridge, player, enemy, *, floor: int = 1) -> None:
+        self.bridge = bridge
+        self.player = player
+        self.enemy = enemy
+        self.floor = floor
+        self.turn = 1
+
+        self.battle_log: list[str] = []
+        self.inspect_index: int | None = None
+        self.result: str | None = None
+        self.current_intent: dict | None = None
+
+        self.fatal_error: ModCallError | None = None
+        self.error_recoverable = False
+        self._resume_state: str | None = None
+        self.finished = False
+
+        self.state = STATE_BATTLE_START
+        self._enter_battle_start()
+
+    # ------------------------------------------------------------------
+    # 狀態機
+    # ------------------------------------------------------------------
+
+    def _log(self, message: str) -> None:
+        self.battle_log.append(message)
+
+    def _call_hook(self, name: str, *args) -> bool:
+        """回傳 True 表示成功（或本來就沒實作），False 表示已經進入錯誤畫面。"""
+        try:
+            self.bridge.call_hook(name, *args)
+        except ModCallError as exc:
+            self._fatal(exc)
+            return False
+        return True
+
+    def _check_and_maybe_end(self) -> bool:
+        """呼叫 check_result；分出勝負就轉成 BATTLE_END。回傳戰鬥是否已經結束（含出錯）。"""
+        try:
+            result = self.bridge.check_result(self.player, self.enemy)
+        except ModCallError as exc:
+            self._fatal(exc)
+            return True
+        if result is not None:
+            self.result = result
+            self.state = STATE_BATTLE_END
+            self._log("你獲勝了！" if result == "win" else "你被擊敗了……")
+            self._call_hook("on_battle_end", self.player, self.enemy)
+            self.finished = True
+            return True
+        return False
+
+    def _enter_battle_start(self) -> None:
+        self.state = STATE_BATTLE_START
+        if not self._call_hook("on_battle_start", self.player, self.enemy):
+            return
+        if self._check_and_maybe_end():
+            return
+        self._enter_player_turn()
+
+    def _enter_player_turn(self) -> None:
+        self.state = STATE_PLAYER_TURN
+        try:
+            self.bridge.start_turn(self.player)
+        except ModCallError as exc:
+            self._fatal(exc)
+            return
+        if not self._call_hook("on_turn_start", self.player):
+            return
+        if self._check_and_maybe_end():
+            return
+        try:
+            self.current_intent = self.bridge.get_enemy_intent(self.enemy)
+        except ModCallError as exc:
+            self._fatal(exc)
+
+    def _enter_enemy_turn(self) -> None:
+        self.state = STATE_ENEMY_TURN
+        if self._check_and_maybe_end():
+            return
+        if not self._call_hook("on_turn_end", self.player):
+            return
+        try:
+            message = self.bridge.enemy_act(self.enemy, self.player)
+        except ModCallError as exc:
+            self._fatal(exc)
+            return
+        self._log(message)
+        if self._check_and_maybe_end():
+            return
+        self.turn += 1
+        self._enter_player_turn()
+
+    def _fatal(self, error: ModCallError) -> None:
+        """battle 流程本身出錯：顯示錯誤面板，玩家確認後結束整場戰鬥（回到標題等級的安全狀態）。"""
+        self.fatal_error = error
+        self._resume_state = self.state
+        self.state = STATE_SHOWING_ERROR
+        self.error_recoverable = False
+
+    def _card_error(self, error: ModCallError) -> None:
+        """出牌本身出錯：顯示錯誤面板，玩家確認後取消這次出牌，留在原本的回合繼續玩。"""
+        self.fatal_error = error
+        self._resume_state = STATE_PLAYER_TURN
+        self.state = STATE_SHOWING_ERROR
+        self.error_recoverable = True
+
+    # ------------------------------------------------------------------
+    # 輸入
+    # ------------------------------------------------------------------
+
+    def handle(self, actions: list[Action]) -> None:
+        for action in actions:
+            self._handle_one(action)
+
+    def _handle_one(self, action: Action) -> None:
+        if self.state == STATE_SHOWING_ERROR:
+            if isinstance(action, (Confirm, Back)):
+                self._dismiss_error()
+            return
+        if self.finished:
+            return
+        if isinstance(action, Inspect):
+            hand = self.bridge.player_view(self.player).get("hand", [])
+            if action.index is not None and 0 <= action.index < len(hand):
+                self.inspect_index = action.index
+            else:
+                self.inspect_index = None
+            return
+        if isinstance(action, Back):
+            self.inspect_index = None
+            return
+        if self.state != STATE_PLAYER_TURN:
+            return
+        if isinstance(action, PlayCard):
+            self._play_card(action.index)
+        elif isinstance(action, EndTurn):
+            self._enter_enemy_turn()
+
+    def _dismiss_error(self) -> None:
+        if self.error_recoverable:
+            self.state = self._resume_state or STATE_PLAYER_TURN
+        else:
+            self.finished = True
+        self.fatal_error = None
+
+    def _play_card(self, index: int) -> None:
+        hand = self.bridge.player_view(self.player).get("hand", [])
+        if index < 0 or index >= len(hand):
+            self._log("沒有這張牌。")
+            return
+
+        try:
+            can = self.bridge.can_play(self.player, index)
+        except ModCallError as exc:
+            self._card_error(exc)
+            return
+        if not can:
+            self._log(f"現在無法使用「{hand[index].get('name', '?')}」。")
+            return
+
+        if not self._call_hook("before_play", self.player, self.enemy, index):
+            return
+
+        try:
+            message = self.bridge.play_card(self.player, self.enemy, index)
+        except ModCallError as exc:
+            self._card_error(exc)
+            return
+        self._log(message)
+        self.inspect_index = None
+
+        if not self._call_hook("after_play", self.player, self.enemy, index):
+            return
+        self._check_and_maybe_end()
+
+    # ------------------------------------------------------------------
+    # 更新／繪圖
+    # ------------------------------------------------------------------
+
+    def update(self, dt: float) -> None:
+        pass  # 終端機版沒有動畫，不需要處理
+
+    def draw(self, grid: Grid) -> None:
+        if self.state == STATE_SHOWING_ERROR:
+            self._draw_error_panel(grid)
+            return
+        player_view = self.bridge.player_view(self.player)
+        enemy_view = self.bridge.enemy_view(self.enemy)
+        self._draw_frame(grid)
+        self._draw_enemy(grid, enemy_view)
+        self._draw_right_panel(grid, player_view)
+        self._draw_player_status(grid, player_view)
+        self._draw_hand(grid, player_view)
+        self._draw_hint(grid)
+
+    # -- 主框 -----------------------------------------------------------
+
+    def _draw_frame(self, grid: Grid) -> None:
+        fg = "frame"
+        draw_box(grid, layout.FRAME_LEFT, layout.FRAME_TOP, layout.FRAME_WIDTH, layout.FRAME_HEIGHT, fg=fg, style="double")
+        grid.set_cell(layout.PANEL_DIVIDER_COL, layout.FRAME_TOP, "╦", fg)
+
+        draw_text(grid, layout.LEFT_CONTENT_START + 1, layout.HEADER_ROW, f"◆ 地下第 {self.floor} 層", fg="text")
+        turn_label = f"回合 {self.turn}"
+        draw_text(
+            grid,
+            layout.LEFT_CONTENT_END - text_width(turn_label) + 1,
+            layout.HEADER_ROW,
+            turn_label,
+            fg="text",
+        )
+        title = "檢視卡牌" if self.inspect_index is not None else "戰鬥紀錄"
+        right_title = f"─── {title} ───"
+        title_x = layout.RIGHT_CONTENT_START + max(
+            0, (layout.RIGHT_PANEL_CONTENT_WIDTH - text_width(right_title)) // 2
+        )
+        draw_text(grid, title_x, layout.HEADER_ROW, right_title, fg="text")
+
+        draw_vline(grid, layout.PANEL_DIVIDER_COL, layout.HEADER_ROW, layout.ENEMY_STATUS_ROW - layout.HEADER_ROW + 1, fg)
+
+        draw_hline(grid, layout.FRAME_LEFT + 1, layout.LEFT_DIVIDER_ROW, layout.PANEL_DIVIDER_COL - 1, fg)
+        grid.set_cell(layout.FRAME_LEFT, layout.LEFT_DIVIDER_ROW, "╠", fg)
+        grid.set_cell(layout.PANEL_DIVIDER_COL, layout.LEFT_DIVIDER_ROW, "╣", fg)
+
+        draw_hline(grid, layout.FRAME_LEFT + 1, layout.FULL_DIVIDER_ROW, layout.FRAME_RIGHT - layout.FRAME_LEFT - 1, fg)
+        grid.set_cell(layout.FRAME_LEFT, layout.FULL_DIVIDER_ROW, "╠", fg)
+        grid.set_cell(layout.PANEL_DIVIDER_COL, layout.FULL_DIVIDER_ROW, "╩", fg)
+        grid.set_cell(layout.FRAME_RIGHT, layout.FULL_DIVIDER_ROW, "╣", fg)
+
+    # -- 敵人 -------------------------------------------------------------
+
+    def _draw_enemy(self, grid: Grid, enemy_view: dict) -> None:
+        art = enemy_view.get("art", [])
+        art_width = max((text_width(line) for line in art), default=0)
+        left_width = layout.LEFT_CONTENT_END - layout.LEFT_CONTENT_START + 1
+        art_x = layout.LEFT_CONTENT_START + max(0, (left_width - art_width) // 2)
+        draw_ascii_art(grid, art_x, layout.ENEMY_ART_TOP, art, fg=enemy_view.get("color", "white"))
+
+        banner_width = 40
+        banner_x = layout.LEFT_CONTENT_START + (left_width - banner_width) // 2
+        draw_banner(grid, banner_x, layout.ENEMY_BANNER_ROW, banner_width, enemy_view.get("name", "?"))
+
+        hp = enemy_view.get("hp", 0)
+        max_hp = enemy_view.get("max_hp", max(hp, 1))
+        block = enemy_view.get("block", 0)
+        hp_x = layout.LEFT_CONTENT_START + 15
+        draw_text(grid, hp_x, layout.ENEMY_HP_ROW, "HP ", fg="text")
+        draw_hp_bar(grid, hp_x + 3, layout.ENEMY_HP_ROW, 20, hp, max_hp)
+        draw_text(grid, hp_x + 24, layout.ENEMY_HP_ROW, f"{hp}/{max_hp}", fg="text")
+        if block > 0:
+            draw_text(grid, hp_x + 35, layout.ENEMY_HP_ROW, f"盾 {block}", fg="block")
+
+        if self.current_intent is not None:
+            intent = self._format_intent(self.current_intent)
+            intent_color = "attack" if self.current_intent.get("type") == "attack" else "skill"
+            intent_x = layout.LEFT_CONTENT_START + max(0, (left_width - text_width(intent)) // 2)
+            draw_text(grid, intent_x, layout.ENEMY_INTENT_ROW, intent, fg=intent_color)
+
+    @staticmethod
+    def _format_intent(intent: dict) -> str:
+        value = intent.get("value", 0)
+        if intent.get("type") == "attack":
+            return f">> 準備攻擊 {value} <<"
+        return f">> 準備防禦 {value} <<"
+
+    # -- 右面板：戰鬥紀錄 / 卡牌詳細資訊 ------------------------------------
+
+    def _draw_right_panel(self, grid: Grid, player_view: dict) -> None:
+        hand = player_view.get("hand", [])
+        if self.inspect_index is not None and 0 <= self.inspect_index < len(hand):
+            self._draw_card_detail(grid, hand[self.inspect_index])
+            return
+        self._draw_battle_log(grid)
+
+    def _draw_battle_log(self, grid: Grid) -> None:
+        wrapped: list[str] = []
+        for entry in self.battle_log:
+            wrapped.extend(wrap_text(f"› {entry}", layout.RIGHT_PANEL_CONTENT_WIDTH))
+        visible_height = layout.RIGHT_PANEL_BOTTOM - layout.RIGHT_PANEL_TOP
+        visible = wrapped[-visible_height:] if visible_height > 0 else []
+        start_row = layout.RIGHT_PANEL_BOTTOM - len(visible)
+        for i, line in enumerate(visible):
+            draw_text(grid, layout.RIGHT_CONTENT_START + 1, start_row + i, line, fg="text")
+
+    def _draw_card_detail(self, grid: Grid, card: dict) -> None:
+        y = layout.RIGHT_PANEL_TOP
+        x = layout.RIGHT_CONTENT_START + 1
+        type_label = TYPE_LABELS.get(card.get("type"), card.get("type", "?"))
+        draw_text(grid, x, y, card.get("name", "?"), fg="text")
+        draw_text(grid, x, y + 1, f"費用 {card.get('cost', '?')}　類型 {type_label}", fg="text")
+        lines = wrap_text(card.get("description", ""), layout.RIGHT_PANEL_CONTENT_WIDTH)
+        for i, line in enumerate(lines):
+            draw_keyword_text(grid, x, y + 3 + i, line, "text", "keyword")
+
+    # -- 玩家狀態 ---------------------------------------------------------
+
+    def _draw_player_status(self, grid: Grid, player_view: dict) -> None:
+        hp = player_view.get("hp", 0)
+        max_hp = player_view.get("max_hp", max(hp, 1))
+        block = player_view.get("block", 0)
+        energy = player_view.get("energy", 0)
+        max_energy = max(energy, player_view.get("max_energy", energy))
+        draw_pile = len(player_view.get("draw_pile", []))
+        discard = len(player_view.get("discard", []))
+
+        x = layout.LEFT_CONTENT_START + 1
+        x = draw_text(grid, x, layout.PLAYER_STATUS_ROW, f"[ {player_view.get('name', '冒險者')} ]  HP ", fg="text")
+        draw_hp_bar(grid, x, layout.PLAYER_STATUS_ROW, 20, hp, max_hp)
+        x = draw_text(grid, x + 21, layout.PLAYER_STATUS_ROW, f"{hp}/{max_hp}", fg="text")
+        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"盾 {block}", fg="block")
+        x = draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, "能量 ", fg="text")
+        x = draw_energy_pips(grid, x, layout.PLAYER_STATUS_ROW, energy, max_energy)
+        draw_text(grid, x + 4, layout.PLAYER_STATUS_ROW, f"牌堆 {draw_pile} / 棄牌 {discard}", fg="text")
+
+    # -- 手牌 -------------------------------------------------------------
+
+    def _draw_hand(self, grid: Grid, player_view: dict) -> None:
+        hand = player_view.get("hand", [])
+        for i, card in enumerate(hand[: layout.CARD_MAX_COUNT]):
+            playable = self._card_playable_for_display(i)
+            draw_card(
+                grid,
+                layout.card_slot_x(i),
+                layout.HAND_ROW_TOP,
+                name=card.get("name", "?"),
+                cost=card.get("cost", 0),
+                card_type=card.get("type", "attack"),
+                description=card.get("description", ""),
+                playable=playable,
+                highlighted=(i == self.inspect_index),
+            )
+
+    def _card_playable_for_display(self, index: int) -> bool:
+        """畫面上要不要把卡片畫成灰階；這裡失敗就保守顯示成可以使用，
+        真正出牌時 can_play 出錯還是會照常跳出錯誤面板。"""
+        try:
+            return self.bridge.can_play(self.player, index)
+        except ModCallError:
+            return True
+
+    # -- 操作提示 ---------------------------------------------------------
+
+    def _draw_hint(self, grid: Grid) -> None:
+        hint = "[1-7] 出牌        [E] 結束回合        [?N] 檢視卡牌        [?] 取消檢視"
+        hint_x = max(0, (layout.SCREEN_WIDTH - text_width(hint)) // 2)
+        draw_text(grid, hint_x, layout.HINT_ROW, hint, fg="dim")
+
+    # -- 錯誤面板 ---------------------------------------------------------
+
+    def _draw_error_panel(self, grid: Grid) -> None:
+        raw_lines = self.fatal_error.panel_lines() if self.fatal_error else ["發生未知錯誤。"]
+        inner_width = ERROR_PANEL_WIDTH - 4
+        wrapped_lines: list[str] = []
+        for line in raw_lines:
+            wrapped_lines.extend(wrap_text(line, inner_width) or [""])
+
+        title = "發生錯誤（已安全接住，可以繼續遊戲）" if self.error_recoverable else "發生嚴重錯誤"
+        h = min(28, len(wrapped_lines) + 6)
+        x = (layout.SCREEN_WIDTH - ERROR_PANEL_WIDTH) // 2
+        y = 2
+
+        draw_box(grid, x, y, ERROR_PANEL_WIDTH, h, fg="hp", style="double", title=title)
+        for row, line in enumerate(wrapped_lines[: h - 5]):
+            draw_text(grid, x + 2, y + 2 + row, line, fg="text")
+
+        prompt = "按 Enter 繼續出牌" if self.error_recoverable else "按 Enter 結束這場戰鬥"
+        draw_text(grid, x + 2, y + h - 2, prompt, fg="dim")

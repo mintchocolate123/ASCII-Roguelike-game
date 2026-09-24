@@ -70,6 +70,7 @@ def can_play(player, hand_index):
 
 
 def play_card(player, enemy, hand_index):
+    x = 1 / 0
     card = player["hand"].pop(hand_index)
     player["energy"] -= card["cost"]
 

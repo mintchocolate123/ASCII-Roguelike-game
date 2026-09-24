@@ -197,8 +197,8 @@ def _validate_records(model_cls, raw_list: list, mod_id: str, filename: str, rep
     return valid
 
 
-def _validate_card_description(card: CardDef, idx: int, mod_id: str, filename: str, report: LoadReport) -> bool:
-    """回傳 True 表示這張卡的描述有效。"""
+def _validate_card_description(card: CardDef, idx: int, mod_id: str, filename: str, report: LoadReport) -> str | None:
+    """驗證並回傳代入數值後的描述文字；描述無效時回傳 None。"""
     data = card.model_dump(exclude_none=True)
     location = format_location(mod_id, filename, idx, card.id)
 
@@ -206,13 +206,13 @@ def _validate_card_description(card: CardDef, idx: int, mod_id: str, filename: s
         report.warning(
             f"{location}：有 effect 的卡牌必須填寫 description，因為引擎無法從程式推測效果，這筆資料已跳過。"
         )
-        return False
+        return None
 
     try:
         text = resolve_description(data)
     except CardTextError as exc:
         report.warning(f"{location}：{exc}這筆資料已跳過。")
-        return False
+        return None
 
     lines = wrap_text(text, DESCRIPTION_WIDTH)
     if len(lines) > DESCRIPTION_MAX_LINES:
@@ -220,8 +220,8 @@ def _validate_card_description(card: CardDef, idx: int, mod_id: str, filename: s
             f"{location}：描述超過卡片空間，換行後共 {len(lines)} 行，"
             f"上限 {DESCRIPTION_MAX_LINES} 行，這筆資料已跳過。"
         )
-        return False
-    return True
+        return None
+    return text
 
 
 def _validate_art(
@@ -307,9 +307,11 @@ def _load_mod_content(mod_id: str, mod_dir: Path, db: ModDatabase, report: LoadR
     cards_raw = _load_json_list(mod_dir / "cards.json", mod_id, "cards.json", report)
     cards = _validate_records(CardDef, cards_raw, mod_id, "cards.json", report)
     for idx, card in enumerate(cards):
-        if not _validate_card_description(card, idx, mod_id, "cards.json", report):
+        description = _validate_card_description(card, idx, mod_id, "cards.json", report)
+        if description is None:
             continue
         data = card.model_dump(exclude_none=True)
+        data["description"] = description
         data["full_id"] = _full_id(mod_id, card.id)
         _merge_record(db.cards, db._card_origins, mod_id, "cards.json", idx, card.id, data, card.overrides, report)
 
