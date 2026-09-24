@@ -6,7 +6,7 @@ from pathlib import Path
 import pygame
 
 from .. import layout, palette
-from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard, Quit, Reload
+from ..actions import Action, Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Quit, Reload
 from ..grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH, HEIGHT as GRID_HEIGHT, WIDTH as GRID_WIDTH, Grid
 from .base import Renderer
 
@@ -67,6 +67,7 @@ class PygameRenderer(Renderer):
         self._clock = pygame.time.Clock()
         self._glyph_cache: dict[tuple[str, str, str | None], pygame.Surface] = {}
         self._hover_index: int | None = None
+        self._hover_end_turn = False
 
     # ------------------------------------------------------------------
     # Renderer 介面
@@ -97,17 +98,25 @@ class PygameRenderer(Renderer):
                 if action is not None:
                     actions.append(action)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                index = self._card_index_at(event.pos)
-                if index is not None:
-                    actions.append(PlayCard(index))
+                if self._is_over_end_turn_button(event.pos):
+                    actions.append(EndTurn())
+                else:
+                    actions.append(ClickCard(self._card_index_at(event.pos)))
             elif event.type == pygame.MOUSEMOTION:
                 index = self._card_index_at(event.pos)
                 if index != self._hover_index:
                     self._hover_index = index
                     actions.append(Inspect(index))
+                over_button = self._is_over_end_turn_button(event.pos)
+                if over_button != self._hover_end_turn:
+                    self._hover_end_turn = over_button
+                    actions.append(HoverEndTurn(over_button))
         return actions
 
     def supports_animation(self) -> bool:
+        return True
+
+    def supports_mouse(self) -> bool:
         return True
 
     def close(self) -> None:
@@ -147,3 +156,13 @@ class PygameRenderer(Renderer):
             if start <= col < start + layout.CARD_WIDTH:
                 return i
         return None
+
+    @staticmethod
+    def _is_over_end_turn_button(pos: tuple[int, int]) -> bool:
+        px, py = pos
+        col = px // CELL_PIXEL_WIDTH
+        row = py // CELL_PIXEL_HEIGHT
+        return (
+            layout.END_TURN_BUTTON_X <= col < layout.END_TURN_BUTTON_X + layout.END_TURN_BUTTON_WIDTH
+            and layout.END_TURN_BUTTON_Y <= row < layout.END_TURN_BUTTON_Y + layout.END_TURN_BUTTON_HEIGHT
+        )

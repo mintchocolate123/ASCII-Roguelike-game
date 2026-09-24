@@ -16,10 +16,18 @@ REAL_RULES_PATH = MODS_DIR / "core" / "rules.py"
 
 
 def _weak_normal_only_db():
+    """只留一隻 normal tier 敵人，並把血量灌高。這裡只是要測 reload 的行為（不是戰鬥平衡），
+    cards.json 目前可能正被拿來手動測試熱重載（傷害值會變動），血量灌高才不會被一張牌秒殺，
+    導致還沒打到想測的那幾步戰鬥就已經結束。
+    """
     db, report = load_mods(MODS_DIR)
     normal = {k: v for k, v in db.enemies.items() if v["tier"] == "normal"}
     weakest = min(normal, key=lambda k: normal[k]["hp"])
-    db.enemies = {k: v for k, v in db.enemies.items() if v["tier"] != "normal" or k == weakest}
+    tanky = dict(db.enemies[weakest])
+    tanky["hp"] = tanky["max_hp"] = 999_999
+    db.enemies = {
+        k: (tanky if k == weakest else v) for k, v in db.enemies.items() if v["tier"] != "normal" or k == weakest
+    }
     db.run_stages = [{"type": "battle", "tier": "normal"}]
     return db, report
 

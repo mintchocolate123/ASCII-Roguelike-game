@@ -49,9 +49,12 @@ def test_unknown_enemy_full_id_fails_gracefully():
 
 
 def test_reload_mid_battle_via_dev_flow_does_not_crash():
-    """驗收條件：F5（終端機版對應 r）重新載入所有 mod 資料與 rules.py，重開目前這場戰鬥，不能讓遊戲崩潰。"""
-    # 開場 Enter，打一張牌，按 r 觸發重新載入，接著照常打完剩下的戰鬥
-    keys = "\n1\ne\nr\n" + "1\ne\n" * 20
+    """驗收條件：F5（終端機版對應 r）重新載入所有 mod 資料與 rules.py，重開目前這場戰鬥，不能讓遊戲崩潰。
+
+    r 放在任何出牌之前：cards.json 目前可能正被拿來手動測試（傷害值可能被改得很高），
+    如果先出牌再 r，戰鬥可能在按到 r 之前就已經結束，測試會不穩定。
+    """
+    keys = "\nr\n" + "1\ne\n" * 20
     result = _run_battle("core:slime", keys)
     assert "Traceback (most recent call last)" not in result.stderr
     assert result.returncode == 0

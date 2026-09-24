@@ -9,7 +9,17 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame  # noqa: E402  需要先設好 dummy driver 再 import
 
-from engine.actions import Back, Confirm, EndTurn, Inspect, PlayCard, Quit, Reload  # noqa: E402
+from engine.actions import (  # noqa: E402
+    Back,
+    ClickCard,
+    Confirm,
+    EndTurn,
+    HoverEndTurn,
+    Inspect,
+    PlayCard,
+    Quit,
+    Reload,
+)
 from engine.grid import Grid  # noqa: E402
 from engine.render.pygame_renderer import FontLoadError, PygameRenderer  # noqa: E402
 
@@ -127,10 +137,11 @@ def _card_pixel(index: int) -> tuple[int, int]:
     return col * CELL_PIXEL_WIDTH, row * CELL_PIXEL_HEIGHT
 
 
-def test_click_on_card_emits_play_card(renderer):
+def test_click_on_card_emits_click_card(renderer):
+    """點卡牌現在是兩段式：renderer 只回報「點到第幾張」，出不出牌交給 scene 決定。"""
     pos = _card_pixel(2)
     _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
-    assert renderer.poll_actions() == [PlayCard(2)]
+    assert renderer.poll_actions() == [ClickCard(2)]
 
 
 def test_right_click_on_card_does_nothing(renderer):
@@ -139,9 +150,56 @@ def test_right_click_on_card_does_nothing(renderer):
     assert renderer.poll_actions() == []
 
 
-def test_click_outside_hand_area_does_nothing(renderer):
+def test_click_outside_hand_area_emits_click_card_none(renderer):
+    """點空白處要回報 ClickCard(None)，讓 scene 可以取消選取。"""
     _post(pygame.MOUSEBUTTONDOWN, pos=(5, 5), button=1)
-    assert renderer.poll_actions() == []
+    assert renderer.poll_actions() == [ClickCard(None)]
+
+
+def test_number_key_still_emits_play_card_directly(renderer):
+    """驗收條件：數字鍵維持原本行為，直接出牌，不走兩段式。"""
+    _post(pygame.KEYDOWN, key=pygame.K_3)
+    assert renderer.poll_actions() == [PlayCard(2)]
+
+
+def _end_turn_button_pixel() -> tuple[int, int]:
+    from engine import layout
+    from engine.grid import CELL_PIXEL_HEIGHT, CELL_PIXEL_WIDTH
+
+    col = layout.END_TURN_BUTTON_X + 1
+    row = layout.END_TURN_BUTTON_Y + 1
+    return col * CELL_PIXEL_WIDTH, row * CELL_PIXEL_HEIGHT
+
+
+def test_click_on_end_turn_button_emits_end_turn(renderer):
+    pos = _end_turn_button_pixel()
+    _post(pygame.MOUSEBUTTONDOWN, pos=pos, button=1)
+    assert renderer.poll_actions() == [EndTurn()]
+
+
+def test_mouse_move_into_end_turn_button_emits_hover_true(renderer):
+    pos = _end_turn_button_pixel()
+    _post(pygame.MOUSEMOTION, pos=pos)
+    assert renderer.poll_actions() == [HoverEndTurn(True)]
+
+
+def test_mouse_move_out_of_end_turn_button_emits_hover_false(renderer):
+    pos = _end_turn_button_pixel()
+    _post(pygame.MOUSEMOTION, pos=pos)
+    renderer.poll_actions()
+    _post(pygame.MOUSEMOTION, pos=(5, 5))
+    assert renderer.poll_actions() == [HoverEndTurn(False)]
+
+
+def test_hover_end_turn_does_not_repeat_while_staying_inside(renderer):
+    pos_a = _end_turn_button_pixel()
+    pos_b = (pos_a[0] + 1, pos_a[1] + 1)
+    _post(pygame.MOUSEMOTION, pos=pos_a)
+    first = renderer.poll_actions()
+    _post(pygame.MOUSEMOTION, pos=pos_b)
+    second = renderer.poll_actions()
+    assert first == [HoverEndTurn(True)]
+    assert second == []
 
 
 def test_mouse_move_into_card_emits_inspect(renderer):

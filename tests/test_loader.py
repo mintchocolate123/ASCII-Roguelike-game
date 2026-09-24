@@ -59,8 +59,11 @@ def test_real_core_and_example_mod_load_successfully():
     assert "example_mod" in db.enabled_mods
     assert len(db.cards) >= 10
     assert len(db.enemies) == 4
-    # example_mod 只新增卡牌，不覆寫核心內容
-    assert db.cards["core:strike"]["damage"] == 6
+    # example_mod 只新增卡牌，不覆寫核心內容：strike 的傷害應該跟磁碟上目前寫的值一致
+    # （不假設固定數字，cards.json 可能正被拿來手動測試熱重載，數值會變動）
+    on_disk_cards = json.loads((REPO_MODS_DIR / "core" / "cards.json").read_text(encoding="utf-8"))
+    on_disk_strike_damage = next(c["damage"] for c in on_disk_cards if c["id"] == "strike")
+    assert db.cards["core:strike"]["damage"] == on_disk_strike_damage
     assert "example_mod:quick_stab" in db.cards
     # 沒有任何警告或錯誤，只允許完全乾淨的載入
     assert not report.by_level("warning")

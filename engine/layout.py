@@ -47,8 +47,12 @@ HAND_ROW_BOTTOM = 30
 CARD_WIDTH = 12
 CARD_HEIGHT = 10
 CARD_MAX_COUNT = 7
-CARD_SLOT_START_COL = 3
-CARD_SLOT_STRIDE = 13  # CARD_WIDTH + 1 格間距
+CARD_SLOT_START_COL = 1
+CARD_SLOT_STRIDE = 12  # 等於 CARD_WIDTH，卡片緊鄰排列、彼此不留間距，
+# 才能在欄 0 到 95 內同時放下 7 張卡與結束回合按鈕。
+
+# 選取中的卡牌會整張上移一格，用來當作「已選取、再點一次就出牌」的提示。
+SELECTED_CARD_ROW_OFFSET = -1
 
 
 def card_slot_x(index: int) -> int:
@@ -56,5 +60,12 @@ def card_slot_x(index: int) -> int:
     return CARD_SLOT_START_COL + index * CARD_SLOT_STRIDE
 
 
-# --- 操作提示（列 31） ---
+# 結束回合按鈕：緊接在第 7 張卡右邊，跟卡片同高。
+END_TURN_BUTTON_GAP = 1
+END_TURN_BUTTON_WIDTH = 10
+END_TURN_BUTTON_HEIGHT = CARD_HEIGHT
+END_TURN_BUTTON_X = CARD_SLOT_START_COL + CARD_MAX_COUNT * CARD_SLOT_STRIDE + END_TURN_BUTTON_GAP
+END_TURN_BUTTON_Y = HAND_ROW_TOP
+
+# --- 操作提示（列 31）。終端機版才會畫；pygame 版有結束回合按鈕可以點，不需要文字提示。---
 HINT_ROW = 31

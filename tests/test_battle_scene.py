@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from engine.actions import Back, Confirm, EndTurn, Inspect, PlayCard, Reload
+from engine import layout
+from engine.actions import Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Reload
 from engine.bridge import Bridge
 from engine.fx import ENEMY_HIT, PLAYER_BLOCK_GAIN, PLAYER_HIT
 from engine.grid import Grid, plain_lines
@@ -339,3 +340,167 @@ def test_reload_sets_flag_even_while_showing_error():
     assert scene.state == STATE_SHOWING_ERROR
     scene.handle([Reload()])
     assert scene.reload_requested is True
+
+
+# ---------------------------------------------------------------------------
+# 手牌兩段式點擊：第一下選取、第二下出牌
+# ---------------------------------------------------------------------------
+
+
+def test_click_card_first_time_selects_and_shows_detail():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index == 0
+    assert scene.inspect_index == 0
+    assert scene.enemy["hp"] == 99  # 還沒出牌
+
+
+def test_click_card_second_time_plays_it():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    scene.handle([ClickCard(0)])
+    assert scene.enemy["hp"] == 94
+    assert scene.selected_index is None
+    assert any("造成 5 點傷害" in m for m in scene.battle_log)
+
+
+def test_click_different_card_switches_selection():
+    card_a = _card(id="a", damage=1, cost=1)
+    card_b = _card(id="b", damage=1, cost=1)
+    scene = BattleScene(_bridge(), _player([card_a, card_b]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index == 0
+    scene.handle([ClickCard(1)])
+    assert scene.selected_index == 1
+    assert scene.enemy["hp"] == 99  # 換選取，還沒出牌
+
+
+def test_click_unaffordable_card_shows_detail_but_cannot_select_or_play():
+    expensive_card = _card(damage=5, cost=99)  # 玩家能量只有 3，打不起
+    scene = BattleScene(_bridge(), _player([expensive_card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    assert scene.inspect_index == 0
+    assert scene.selected_index is None
+
+    # 再點一次同一張卡：因為從來沒有真的「選取」成功，這裡還是第一下的行為，不會出牌
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index is None
+    assert scene.enemy["hp"] == 99
+    assert scene.player["energy"] == 3  # 完全沒有扣能量
+
+
+def test_click_blank_deselects():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    assert scene.selected_index == 0
+
+    scene.handle([ClickCard(None)])
+    assert scene.selected_index is None
+    assert scene.inspect_index is None
+
+
+def test_esc_deselects():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+    scene.handle([Back()])
+    assert scene.selected_index is None
+    assert scene.inspect_index is None
+
+
+def test_click_out_of_range_index_deselects():
+    scene = BattleScene(_bridge(), _player([]), _enemy(hp=99))
+    scene.handle([ClickCard(5)])
+    assert scene.selected_index is None
+
+
+def test_number_key_play_resets_stale_mouse_selection():
+    """驗收條件：數字鍵一律直接出牌；出牌後任何滑鼠選取狀態都要清掉，不會殘留指到錯的手牌索引。"""
+    card_a = _card(id="a", damage=1, cost=1)
+    card_b = _card(id="b", damage=1, cost=1)
+    scene = BattleScene(_bridge(), _player([card_a, card_b]), _enemy(hp=99))
+    scene.handle([ClickCard(1)])
+    assert scene.selected_index == 1
+    scene.handle([PlayCard(0)])  # 數字鍵直接出第一張牌，不管選取狀態
+    assert scene.selected_index is None
+
+
+def test_fx_playing_blocks_click_card():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card, card]), _enemy(hp=99), supports_animation=True)
+    scene.handle([ClickCard(0)])
+    scene.handle([ClickCard(0)])  # 出牌，觸發 enemy_hit 效果
+    assert scene.fx.is_playing is True
+
+    scene.handle([ClickCard(0)])  # 效果播放中，這次點擊應該被忽略
+    assert scene.enemy["hp"] == 94  # 沒有再扣一次血
+
+
+# ---------------------------------------------------------------------------
+# 結束回合按鈕：滑鼠移上去 highlight、點擊等於 EndTurn
+# ---------------------------------------------------------------------------
+
+
+def test_hover_end_turn_sets_flag():
+    scene = BattleScene(_bridge(), _player([]), _enemy(hp=99))
+    assert scene.end_turn_hovered is False
+    scene.handle([HoverEndTurn(True)])
+    assert scene.end_turn_hovered is True
+    scene.handle([HoverEndTurn(False)])
+    assert scene.end_turn_hovered is False
+
+
+def test_draw_end_turn_button_exists_and_highlights_on_hover():
+    scene = BattleScene(_bridge(), _player([]), _enemy(hp=99, actions=[{"type": "attack", "value": 1}]))
+    grid = Grid()
+    scene.draw(grid)
+    assert grid.get(layout.END_TURN_BUTTON_X, layout.END_TURN_BUTTON_Y).char == "╔"
+    assert grid.get(layout.END_TURN_BUTTON_X, layout.END_TURN_BUTTON_Y).fg == "frame"
+
+    scene.handle([HoverEndTurn(True)])
+    grid2 = Grid()
+    scene.draw(grid2)
+    assert grid2.get(layout.END_TURN_BUTTON_X, layout.END_TURN_BUTTON_Y).fg == "highlight"
+
+
+# ---------------------------------------------------------------------------
+# 畫面：選取的卡片整張上移一格、pygame 版不畫列 31 提示、終端機版保留提示
+# ---------------------------------------------------------------------------
+
+
+def test_draw_shifts_selected_card_up_by_one_row():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    scene.handle([ClickCard(0)])
+
+    grid = Grid()
+    scene.draw(grid)
+    x = layout.card_slot_x(0)
+    assert grid.get(x, layout.HAND_ROW_TOP - 1).char == "╔"  # 上移後，卡片頂端出現在原本上面那一列
+    assert grid.get(x, layout.HAND_ROW_TOP).char != "╔"  # 原本的位置已經不是卡片頂端了
+
+
+def test_draw_unselected_card_stays_at_normal_row():
+    card = _card(damage=5, cost=1)
+    scene = BattleScene(_bridge(), _player([card]), _enemy(hp=99))
+    grid = Grid()
+    scene.draw(grid)
+    x = layout.card_slot_x(0)
+    assert grid.get(x, layout.HAND_ROW_TOP).char == "╔"
+
+
+def test_hint_row_hidden_when_supports_mouse():
+    scene = BattleScene(_bridge(), _player([]), _enemy(hp=99), supports_mouse=True)
+    grid = Grid()
+    scene.draw(grid)
+    assert plain_lines(grid)[layout.HINT_ROW].strip() == ""
+
+
+def test_hint_row_shown_when_not_supports_mouse():
+    scene = BattleScene(_bridge(), _player([]), _enemy(hp=99), supports_mouse=False)
+    grid = Grid()
+    scene.draw(grid)
+    assert "出牌" in plain_lines(grid)[layout.HINT_ROW]

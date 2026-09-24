@@ -114,3 +114,6 @@ class TerminalRenderer(Renderer):
 
     def supports_animation(self) -> bool:
         return False
+
+    def supports_mouse(self) -> bool:
+        return False

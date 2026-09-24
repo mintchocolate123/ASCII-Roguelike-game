@@ -89,6 +89,7 @@ def _build_battle(
     max_hp: int | None = None,
     floor: int = 1,
     supports_animation: bool = True,
+    supports_mouse: bool = True,
 ) -> BattleScene:
     """建立一場新的戰鬥；初次進場或 F5 重開都走這裡，確保兩者邏輯一致。"""
     player = bridge.create_player(deck)
@@ -97,7 +98,9 @@ def _build_battle(
         player["max_hp"] = max_hp
     enemy_data = pick_enemy(db.enemies, full_id=enemy_full_id, tier=tier)
     enemy = bridge.create_enemy(enemy_data)
-    return BattleScene(bridge, player, enemy, floor=floor, supports_animation=supports_animation)
+    return BattleScene(
+        bridge, player, enemy, floor=floor, supports_animation=supports_animation, supports_mouse=supports_mouse
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +111,13 @@ def _build_battle(
 class GameController:
     """管理整個 scene 狀態機，一次只有一個 scene 在跑。"""
 
-    def __init__(self, db, report: LoadReport, *, supports_animation: bool = True) -> None:
+    def __init__(
+        self, db, report: LoadReport, *, supports_animation: bool = True, supports_mouse: bool = True
+    ) -> None:
         self.db = db
         self.report = report
         self.supports_animation = supports_animation
+        self.supports_mouse = supports_mouse
         self.bridge: Bridge | None = None
         self.run: Run | None = None
         self.quit_requested = False
@@ -202,6 +208,7 @@ class GameController:
                 max_hp=self.run.max_hp,
                 floor=self.run.floor,
                 supports_animation=self.supports_animation,
+                supports_mouse=self.supports_mouse,
             )
         except ModCallError as exc:
             self.scene = ResultScene(victory=False, message="\n".join(exc.panel_lines()))
@@ -239,6 +246,7 @@ class GameController:
                 max_hp=self.run.max_hp,
                 floor=self.run.floor,
                 supports_animation=self.supports_animation,
+                supports_mouse=self.supports_mouse,
             )
         except ModCallError as exc:
             scene.battle_log.append("重新載入後無法重開戰鬥：" + "\n".join(exc.panel_lines()))
@@ -260,7 +268,9 @@ def run_game(use_terminal: bool) -> int:
     if renderer is None:
         return 1
 
-    controller = GameController(db, report, supports_animation=renderer.supports_animation())
+    controller = GameController(
+        db, report, supports_animation=renderer.supports_animation(), supports_mouse=renderer.supports_mouse()
+    )
 
     grid = Grid()
     controller.draw(grid)
@@ -308,7 +318,12 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
     try:
         deck = build_starting_deck(db.cards)
         scene = _build_battle(
-            bridge, db, deck, enemy_full_id=enemy_full_id, supports_animation=renderer.supports_animation()
+            bridge,
+            db,
+            deck,
+            enemy_full_id=enemy_full_id,
+            supports_animation=renderer.supports_animation(),
+            supports_mouse=renderer.supports_mouse(),
         )
     except ModCallError as exc:
         print("無法開始戰鬥：")
@@ -347,6 +362,7 @@ def run_dev_battle(use_terminal: bool, enemy_full_id: str) -> int:
                     scene = _build_battle(
                         bridge, db, new_deck, enemy_full_id=enemy_full_id,
                         supports_animation=renderer.supports_animation(),
+                        supports_mouse=renderer.supports_mouse(),
                     )
                     scene.battle_log.append("已重新載入 mod 資料與 rules.py，戰鬥重新開始。")
                 except ModCallError as exc:

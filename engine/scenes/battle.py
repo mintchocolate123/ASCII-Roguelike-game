@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from .. import layout
-from ..actions import Action, Back, Confirm, EndTurn, Inspect, PlayCard, Reload
+from ..actions import Action, Back, ClickCard, Confirm, EndTurn, HoverEndTurn, Inspect, PlayCard, Reload
 from ..bridge import Bridge, ModCallError
 from ..draw import (
     TYPE_LABELS,
@@ -37,16 +37,28 @@ ERROR_PANEL_WIDTH = 90
 
 
 class BattleScene(Scene):
-    def __init__(self, bridge: Bridge, player, enemy, *, floor: int = 1, supports_animation: bool = True) -> None:
+    def __init__(
+        self,
+        bridge: Bridge,
+        player,
+        enemy,
+        *,
+        floor: int = 1,
+        supports_animation: bool = True,
+        supports_mouse: bool = True,
+    ) -> None:
         self.bridge = bridge
         self.player = player
         self.enemy = enemy
         self.floor = floor
         self.turn = 1
         self.supports_animation = supports_animation
+        self.supports_mouse = supports_mouse
 
         self.battle_log: list[str] = []
         self.inspect_index: int | None = None
+        self.selected_index: int | None = None  # 滑鼠兩段式點擊：第一下選取，第二下才出牌
+        self.end_turn_hovered = False
         self.result: str | None = None
         self.current_intent: dict | None = None
 
@@ -188,15 +200,36 @@ class BattleScene(Scene):
             else:
                 self.inspect_index = None
             return
+        if isinstance(action, HoverEndTurn):
+            self.end_turn_hovered = action.active
+            return
         if isinstance(action, Back):
             self.inspect_index = None
+            self.selected_index = None
             return
         if self.state != STATE_PLAYER_TURN:
             return
-        if isinstance(action, PlayCard):
-            self._play_card(action.index)
+        if isinstance(action, ClickCard):
+            self._click_card(action.index)
+        elif isinstance(action, PlayCard):
+            self._play_card(action.index)  # 數字鍵：一律直接出牌，不用兩段式
         elif isinstance(action, EndTurn):
             self._enter_enemy_turn()
+
+    def _click_card(self, index: int | None) -> None:
+        """滑鼠兩段式點擊：點空白處或點到範圍外取消選取；點第一下選取（能量不足的卡只顯示
+        詳情、不會進入選取狀態）；對已經選取的那張卡再點一次才會真的出牌。"""
+        hand = self.bridge.player_view(self.player).get("hand", [])
+        if index is None or not (0 <= index < len(hand)):
+            self.selected_index = None
+            self.inspect_index = None
+            return
+        if self.selected_index == index:
+            self.selected_index = None
+            self._play_card(index)
+            return
+        self.inspect_index = index
+        self.selected_index = index if self._card_playable_for_display(index) else None
 
     def _dismiss_error(self) -> None:
         if self.error_recoverable:
@@ -232,6 +265,7 @@ class BattleScene(Scene):
             return
         self._log(message)
         self.inspect_index = None
+        self.selected_index = None
         self._trigger_fx(before_player, before_enemy)
 
         if not self._call_hook("after_play", self.player, self.enemy, index):
@@ -274,7 +308,8 @@ class BattleScene(Scene):
             turn_label,
             fg="text",
         )
-        title = "檢視卡牌" if self.inspect_index is not None else "戰鬥紀錄"
+        showing_detail = self.selected_index is not None or self.inspect_index is not None
+        title = "檢視卡牌" if showing_detail else "戰鬥紀錄"
         right_title = f"─── {title} ───"
         title_x = layout.RIGHT_CONTENT_START + max(
             0, (layout.RIGHT_PANEL_CONTENT_WIDTH - text_width(right_title)) // 2
@@ -334,8 +369,10 @@ class BattleScene(Scene):
 
     def _draw_right_panel(self, grid: Grid, player_view: dict) -> None:
         hand = player_view.get("hand", [])
-        if self.inspect_index is not None and 0 <= self.inspect_index < len(hand):
-            self._draw_card_detail(grid, hand[self.inspect_index])
+        # 選取中的卡片「固定顯示」詳情，優先於滑鼠移入等短暫的檢視。
+        detail_index = self.selected_index if self.selected_index is not None else self.inspect_index
+        if detail_index is not None and 0 <= detail_index < len(hand):
+            self._draw_card_detail(grid, hand[detail_index])
             return
         self._draw_battle_log(grid)
 
@@ -391,17 +428,20 @@ class BattleScene(Scene):
         hand = player_view.get("hand", [])
         for i, card in enumerate(hand[: layout.CARD_MAX_COUNT]):
             playable = self._card_playable_for_display(i)
+            selected = i == self.selected_index
+            y = layout.HAND_ROW_TOP + (layout.SELECTED_CARD_ROW_OFFSET if selected else 0)
             draw_card(
                 grid,
                 layout.card_slot_x(i),
-                layout.HAND_ROW_TOP,
+                y,
                 name=card.get("name", "?"),
                 cost=card.get("cost", 0),
                 card_type=card.get("type", "attack"),
                 description=card.get("description", ""),
                 playable=playable,
-                highlighted=(i == self.inspect_index),
+                highlighted=selected or (i == self.inspect_index),
             )
+        self._draw_end_turn_button(grid)
 
     def _card_playable_for_display(self, index: int) -> bool:
         """畫面上要不要把卡片畫成灰階；這裡失敗就保守顯示成可以使用，
@@ -411,9 +451,21 @@ class BattleScene(Scene):
         except ModCallError:
             return True
 
+    def _draw_end_turn_button(self, grid: Grid) -> None:
+        x, y = layout.END_TURN_BUTTON_X, layout.END_TURN_BUTTON_Y
+        w, h = layout.END_TURN_BUTTON_WIDTH, layout.END_TURN_BUTTON_HEIGHT
+        fg = "highlight" if self.end_turn_hovered else "frame"
+        draw_box(grid, x, y, w, h, fg=fg, style="double")
+        label = "結束回合"
+        draw_text(grid, x + max(1, (w - text_width(label)) // 2), y + h // 2 - 1, label, fg=fg)
+        key_hint = "[E]"
+        draw_text(grid, x + max(1, (w - text_width(key_hint)) // 2), y + h // 2 + 1, key_hint, fg=fg)
+
     # -- 操作提示 ---------------------------------------------------------
 
     def _draw_hint(self, grid: Grid) -> None:
+        if self.supports_mouse:
+            return  # 滑鼠版有結束回合按鈕跟卡牌懸停可以用，不需要額外的文字提示
         hint = "[1-7] 出牌        [E] 結束回合        [?N] 檢視卡牌        [?] 取消檢視"
         hint_x = max(0, (layout.SCREEN_WIDTH - text_width(hint)) // 2)
         draw_text(grid, hint_x, layout.HINT_ROW, hint, fg="dim")
